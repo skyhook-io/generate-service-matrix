@@ -1,5 +1,5 @@
 name: 'Generate Service Matrix'
-description: 'Generates a service × environment matrix from .skyhook/skyhook.yaml (with optional remote deployment repo discovery) or .koala-monorepo.json/.koala.toml configuration'
+description: 'Generates build and deploy matrices from .skyhook/skyhook.yaml or .koala-monorepo.json'
 author: 'Skyhook'
  
 branding:
