@@ -103,6 +103,12 @@ async function run() {
     core.info(`✅ Generated build matrix with ${buildMatrixInclude.length} entries:`);
     core.info(JSON.stringify(buildMatrix, null, 2));
 
+    // Output full matrix (matching create-deployment-matrix format for backward compatibility)
+    const fullMatrix = finalMatrix.toObject();
+    core.setOutput('matrix', JSON.stringify(fullMatrix));
+    core.info(`✅ Generated matrix with ${finalMatrix.count} entries:`);
+    core.info(JSON.stringify(fullMatrix, null, 2));
+
     // Build deploy_matrix: only auto_deploy entries
     const deployMatrixInclude = finalMatrix.include.filter(e => e.auto_deploy === 'true');
     const deployMatrix = { include: deployMatrixInclude.map(e => e.toObject()) };
@@ -245,10 +251,14 @@ async function processSkyhookConfig(skyhookPath, tag, overlay, repoPath, service
   for (const service of config.services) {
     if (service.deploymentRepo) {
       core.info(`🔍 Resolving environments for ${service.name} from deployment repo ${service.deploymentRepo}`);
-      const envs = await resolveServiceEnvironments(
-        service, branch, githubTokens, cloneCache, envConfigCache
-      );
-      perServiceEnvs.set(service.name, envs);
+      try {
+        const envs = await resolveServiceEnvironments(
+          service, branch, githubTokens, cloneCache, envConfigCache
+        );
+        perServiceEnvs.set(service.name, envs);
+      } catch (err) {
+        core.warning(`Failed to resolve environments from deployment repo for ${service.name}: ${err.message}. Falling back to local skyhook.yaml environments.`);
+      }
     }
   }
 

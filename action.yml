@@ -25,6 +25,8 @@ inputs:
     default: '.'
 
 outputs:
+  matrix:
+    description: 'JSON string of the full service×environment matrix (backward compatible with create-deployment-matrix)'
   build_matrix:
     description: 'JSON string of the build matrix (one entry per service with images from kustomization.yaml)'
   deploy_matrix:

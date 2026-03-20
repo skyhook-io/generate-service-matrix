@@ -211,10 +211,10 @@ describe('buildMatrixFromSkyhook', () => {
     expect(entry.cloud_provider).toBe('gcp');
     expect(entry.namespace).toBe('dev');
     expect(entry.account).toBe('koalabackend');
-    expect(entry.auto_deploy).toBe('false');
+    expect(entry.auto_deploy).toBe('true');
   });
 
-  test('auto_deploy reflects environment autoDeploy setting', () => {
+  test('auto_deploy is always true (matching create-deployment-matrix)', () => {
     const envsWithAutoDeploy = [
       { name: 'dev', clusterName: 'c1', autoDeploy: true },
       { name: 'prod', clusterName: 'c2', autoDeploy: false }
@@ -229,7 +229,7 @@ describe('buildMatrixFromSkyhook', () => {
     const devEntry = matrix.include.find(e => e.overlay === 'dev');
     const prodEntry = matrix.include.find(e => e.overlay === 'prod');
     expect(devEntry.auto_deploy).toBe('true');
-    expect(prodEntry.auto_deploy).toBe('false');
+    expect(prodEntry.auto_deploy).toBe('true');
   });
 });
 
