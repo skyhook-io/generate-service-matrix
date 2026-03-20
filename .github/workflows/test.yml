@@ -97,23 +97,16 @@ jobs:
           echo "Deploy matrix: ${{ steps.matrix.outputs.deploy_matrix }}"
           echo '${{ steps.matrix.outputs.deploy_matrix }}' | jq .
 
-          # Only dev has autoDeploy: true, so 2 services x 1 env = 2 entries
+          # auto_deploy is always true, so all entries included: 2 services x 2 envs = 4 entries
           ENTRY_COUNT=$(echo '${{ steps.matrix.outputs.deploy_matrix }}' | jq '.include | length')
-          if [[ $ENTRY_COUNT -ne 2 ]]; then
-            echo "Expected 2 deploy matrix entries (dev only), got $ENTRY_COUNT"
-            exit 1
-          fi
-
-          # All entries should be dev overlay
-          NON_DEV=$(echo '${{ steps.matrix.outputs.deploy_matrix }}' | jq '[.include[] | select(.overlay != "dev")] | length')
-          if [[ $NON_DEV -ne 0 ]]; then
-            echo "Expected only dev entries in deploy_matrix"
+          if [[ $ENTRY_COUNT -ne 4 ]]; then
+            echo "Expected 4 deploy matrix entries, got $ENTRY_COUNT"
             exit 1
           fi
 
           # Verify per-service counter in service_tag
-          VCS_DEV_TAG=$(echo '${{ steps.matrix.outputs.deploy_matrix }}' | jq -r '.include[] | select(.service_name == "vcs") | .service_tag')
-          API_DEV_TAG=$(echo '${{ steps.matrix.outputs.deploy_matrix }}' | jq -r '.include[] | select(.service_name == "api") | .service_tag')
+          VCS_DEV_TAG=$(echo '${{ steps.matrix.outputs.deploy_matrix }}' | jq -r '.include[] | select(.service_name == "vcs" and .overlay == "dev") | .service_tag')
+          API_DEV_TAG=$(echo '${{ steps.matrix.outputs.deploy_matrix }}' | jq -r '.include[] | select(.service_name == "api" and .overlay == "dev") | .service_tag')
 
           if [[ "$VCS_DEV_TAG" != "vcs_v1.0.0_01" ]]; then
             echo "Expected vcs_v1.0.0_01, got $VCS_DEV_TAG"

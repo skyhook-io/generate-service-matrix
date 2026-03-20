@@ -30517,7 +30517,7 @@ function createDeploymentEntry(service, env, tag, serviceRepo, counter) {
   core.info(`   cloud_provider: "${env.cloudProvider || ''}" (from skyhook.yaml environments[].cloudProvider)`);
   core.info(`   namespace: "${env.namespace || ''}" (from skyhook.yaml environments[].namespace)`);
   core.info(`   account: "${env.account || ''}" (from skyhook.yaml environments[].account)`);
-  core.info(`   auto_deploy: "${!!env.autoDeploy}" (from environment config, default false)`);
+  core.info(`   auto_deploy: "true" (default value)`);
   core.info(`   service_tag: "${serviceTag}" (computed: {service_name}_{tag}_{counter})`);
 
   return new DeploymentEntry({
@@ -30532,7 +30532,7 @@ function createDeploymentEntry(service, env, tag, serviceRepo, counter) {
     cloud_provider: env.cloudProvider || '',
     namespace: env.namespace,
     account: env.account,
-    auto_deploy: String(!!env.autoDeploy),
+    auto_deploy: 'true',
     service_tag: serviceTag
   });
 }
@@ -32581,6 +32581,12 @@ async function run() {
     core.setOutput('build_matrix', JSON.stringify(buildMatrix));
     core.info(`✅ Generated build matrix with ${buildMatrixInclude.length} entries:`);
     core.info(JSON.stringify(buildMatrix, null, 2));
+
+    // Output full matrix (matching create-deployment-matrix format for backward compatibility)
+    const fullMatrix = finalMatrix.toObject();
+    core.setOutput('matrix', JSON.stringify(fullMatrix));
+    core.info(`✅ Generated matrix with ${finalMatrix.count} entries:`);
+    core.info(JSON.stringify(fullMatrix, null, 2));
 
     // Build deploy_matrix: only auto_deploy entries
     const deployMatrixInclude = finalMatrix.include.filter(e => e.auto_deploy === 'true');

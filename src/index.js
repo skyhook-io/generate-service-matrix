@@ -103,6 +103,12 @@ async function run() {
     core.info(`✅ Generated build matrix with ${buildMatrixInclude.length} entries:`);
     core.info(JSON.stringify(buildMatrix, null, 2));
 
+    // Output full matrix (matching create-deployment-matrix format for backward compatibility)
+    const fullMatrix = finalMatrix.toObject();
+    core.setOutput('matrix', JSON.stringify(fullMatrix));
+    core.info(`✅ Generated matrix with ${finalMatrix.count} entries:`);
+    core.info(JSON.stringify(fullMatrix, null, 2));
+
     // Build deploy_matrix: only auto_deploy entries
     const deployMatrixInclude = finalMatrix.include.filter(e => e.auto_deploy === 'true');
     const deployMatrix = { include: deployMatrixInclude.map(e => e.toObject()) };
