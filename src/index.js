@@ -5,7 +5,7 @@ const { DeploymentMatrix } = require('./DeploymentMatrix');
 const { detectConfigFormats } = require('./config/config-detector');
 const { parseSkyhookConfig } = require('./config/skyhook-parser');
 const { buildMatrixFromSkyhook, mergeMatrices } = require('./matrix/matrix-builder');
-const { resolveServiceEnvironments } = require('./deployment/repo-fetcher');
+const { resolveServiceEnvironments, readKustomizeImages } = require('./deployment/repo-fetcher');
 
 async function run() {
   try {
@@ -43,6 +43,7 @@ async function run() {
 
     let koalaMatrix = null;
     let skyhookMatrix = null;
+    const skyhookCloneCache = new Map();
 
     // Process Koala config if present
     if (configFormats.hasKoala) {
@@ -55,7 +56,7 @@ async function run() {
     const serviceCounters = koalaMatrix ? getServiceCounters(koalaMatrix) : new Map();
     if (configFormats.hasSkyhook) {
       core.info('📋 Processing Skyhook configuration (.skyhook/skyhook.yaml)');
-      skyhookMatrix = await processSkyhookConfig(configFormats.skyhookPath, tag, overlay, repoPath, serviceCounters, branch, githubTokens);
+      skyhookMatrix = await processSkyhookConfig(configFormats.skyhookPath, tag, overlay, repoPath, serviceCounters, branch, githubTokens, skyhookCloneCache);
     }
 
     // Determine final matrix
@@ -73,11 +74,41 @@ async function run() {
       throw new Error('Generated matrix is empty - no service/environment combinations found');
     }
 
-    // Set output as JSON string for GitHub Actions to parse
-    core.setOutput('matrix', finalMatrix.toJSON());
+    // Build build_matrix: one entry per service with images from kustomization.yaml
+    const buildMatrixInclude = [];
+    const allServices = configFormats.hasSkyhook ? parseSkyhookConfig(configFormats.skyhookPath).services : [];
+    for (const service of allServices) {
+      let images = '';
+      if (service.deploymentRepo) {
+        const cacheKey = `${service.deploymentRepo}:${branch || 'HEAD'}`;
+        const clonedPath = skyhookCloneCache.get(cacheKey);
+        if (clonedPath) {
+          const imageList = readKustomizeImages(
+            clonedPath,
+            service.deploymentRepoPath || service.name,
+            service.name
+          );
+          images = imageList.join(',');
+        }
+      }
+      buildMatrixInclude.push({
+        service_name: service.name,
+        service_dir: service.path,
+        images
+      });
+    }
 
-    core.info(`✅ Generated deployment matrix with ${finalMatrix.count} entries:`);
-    core.info(JSON.stringify(finalMatrix.toObject(), null, 2));
+    const buildMatrix = { include: buildMatrixInclude };
+    core.setOutput('build_matrix', JSON.stringify(buildMatrix));
+    core.info(`✅ Generated build matrix with ${buildMatrixInclude.length} entries:`);
+    core.info(JSON.stringify(buildMatrix, null, 2));
+
+    // Build deploy_matrix: only auto_deploy entries
+    const deployMatrixInclude = finalMatrix.include.filter(e => e.auto_deploy === 'true');
+    const deployMatrix = { include: deployMatrixInclude.map(e => e.toObject()) };
+    core.setOutput('deploy_matrix', JSON.stringify(deployMatrix));
+    core.info(`✅ Generated deploy matrix with ${deployMatrixInclude.length} entries (auto_deploy only):`);
+    core.info(JSON.stringify(deployMatrix, null, 2));
 
   } catch (error) {
     core.setFailed(error.message);
@@ -184,8 +215,9 @@ async function processKoalaConfig(repoPath, branch, tag, githubToken, overlay) {
  * @param {Map<string, number>} serviceCounters - Per-service counters from Koala
  * @param {string} branch - Branch for deployment repo cloning
  * @param {string[]} githubTokens - GitHub tokens to try for deployment repo access (in priority order)
+ * @param {Map<string, string>} cloneCache - Shared clone cache (populated during resolution, reused for image extraction)
  */
-async function processSkyhookConfig(skyhookPath, tag, overlay, repoPath, serviceCounters, branch, githubTokens) {
+async function processSkyhookConfig(skyhookPath, tag, overlay, repoPath, serviceCounters, branch, githubTokens, cloneCache) {
   const config = parseSkyhookConfig(skyhookPath);
 
   core.info(`Found ${config.services.length} services and ${config.environments.length} environments in Skyhook config`);
@@ -208,7 +240,6 @@ async function processSkyhookConfig(skyhookPath, tag, overlay, repoPath, service
 
   // Resolve per-service environments from deployment repos
   const perServiceEnvs = new Map();
-  const cloneCache = new Map();
   const envConfigCache = new Map();
 
   for (const service of config.services) {

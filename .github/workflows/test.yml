@@ -41,12 +41,8 @@ jobs:
           services:
             - name: vcs
               path: apps/vcs
-              deploymentRepo: test-org/deployment
-              deploymentRepoPath: vcs
             - name: api
               path: apps/api
-              deploymentRepo: test-org/deployment
-              deploymentRepoPath: api
 
           environments:
             - name: dev
@@ -55,6 +51,7 @@ jobs:
               account: test-account
               location: us-east1-b
               namespace: dev
+              autoDeploy: true
             - name: prod
               clusterName: prod-cluster
               cloudProvider: gcp
@@ -73,29 +70,50 @@ jobs:
           tag: v1.0.0
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Verify Skyhook matrix
+      - name: Verify build_matrix
         run: |
-          echo "Matrix: ${{ steps.matrix.outputs.matrix }}"
-          echo '${{ steps.matrix.outputs.matrix }}' | jq .
+          echo "Build matrix: ${{ steps.matrix.outputs.build_matrix }}"
+          echo '${{ steps.matrix.outputs.build_matrix }}' | jq .
 
-          # Verify entry count (2 services x 2 environments = 4)
-          ENTRY_COUNT=$(echo '${{ steps.matrix.outputs.matrix }}' | jq '.include | length')
-          if [[ $ENTRY_COUNT -ne 4 ]]; then
-            echo "Expected 4 matrix entries, got $ENTRY_COUNT"
+          # Verify entry count (2 services)
+          ENTRY_COUNT=$(echo '${{ steps.matrix.outputs.build_matrix }}' | jq '.include | length')
+          if [[ $ENTRY_COUNT -ne 2 ]]; then
+            echo "Expected 2 build matrix entries, got $ENTRY_COUNT"
             exit 1
           fi
 
           # Verify service names
-          VCS_COUNT=$(echo '${{ steps.matrix.outputs.matrix }}' | jq '[.include[] | select(.service_name == "vcs")] | length')
-          API_COUNT=$(echo '${{ steps.matrix.outputs.matrix }}' | jq '[.include[] | select(.service_name == "api")] | length')
-          if [[ $VCS_COUNT -ne 2 ]] || [[ $API_COUNT -ne 2 ]]; then
-            echo "Expected 2 entries each for vcs and api"
+          VCS=$(echo '${{ steps.matrix.outputs.build_matrix }}' | jq -r '.include[] | select(.service_name == "vcs") | .service_name')
+          API=$(echo '${{ steps.matrix.outputs.build_matrix }}' | jq -r '.include[] | select(.service_name == "api") | .service_name')
+          if [[ "$VCS" != "vcs" ]] || [[ "$API" != "api" ]]; then
+            echo "Expected vcs and api in build_matrix"
+            exit 1
+          fi
+
+          echo "✅ build_matrix correct"
+
+      - name: Verify deploy_matrix
+        run: |
+          echo "Deploy matrix: ${{ steps.matrix.outputs.deploy_matrix }}"
+          echo '${{ steps.matrix.outputs.deploy_matrix }}' | jq .
+
+          # Only dev has autoDeploy: true, so 2 services x 1 env = 2 entries
+          ENTRY_COUNT=$(echo '${{ steps.matrix.outputs.deploy_matrix }}' | jq '.include | length')
+          if [[ $ENTRY_COUNT -ne 2 ]]; then
+            echo "Expected 2 deploy matrix entries (dev only), got $ENTRY_COUNT"
+            exit 1
+          fi
+
+          # All entries should be dev overlay
+          NON_DEV=$(echo '${{ steps.matrix.outputs.deploy_matrix }}' | jq '[.include[] | select(.overlay != "dev")] | length')
+          if [[ $NON_DEV -ne 0 ]]; then
+            echo "Expected only dev entries in deploy_matrix"
             exit 1
           fi
 
           # Verify per-service counter in service_tag
-          VCS_DEV_TAG=$(echo '${{ steps.matrix.outputs.matrix }}' | jq -r '.include[] | select(.service_name == "vcs" and .overlay == "dev") | .service_tag')
-          API_DEV_TAG=$(echo '${{ steps.matrix.outputs.matrix }}' | jq -r '.include[] | select(.service_name == "api" and .overlay == "dev") | .service_tag')
+          VCS_DEV_TAG=$(echo '${{ steps.matrix.outputs.deploy_matrix }}' | jq -r '.include[] | select(.service_name == "vcs") | .service_tag')
+          API_DEV_TAG=$(echo '${{ steps.matrix.outputs.deploy_matrix }}' | jq -r '.include[] | select(.service_name == "api") | .service_tag')
 
           if [[ "$VCS_DEV_TAG" != "vcs_v1.0.0_01" ]]; then
             echo "Expected vcs_v1.0.0_01, got $VCS_DEV_TAG"
@@ -107,7 +125,7 @@ jobs:
             exit 1
           fi
 
-          echo "✅ Skyhook configuration working correctly"
+          echo "✅ deploy_matrix correct"
 
   test-skyhook-existing-tags:
     runs-on: ubuntu-latest
@@ -128,18 +146,14 @@ jobs:
           git config user.name "Test"
           git checkout -b main
 
-          # Create skyhook config with two services
+          # Create skyhook config with two services (no deploymentRepo, use global envs)
           mkdir -p .skyhook apps/svc-a apps/svc-b
           cat > .skyhook/skyhook.yaml << 'YAML'
           services:
             - name: svc-a
               path: apps/svc-a
-              deploymentRepo: test-org/deployment
-              deploymentRepoPath: svc-a
             - name: svc-b
               path: apps/svc-b
-              deploymentRepo: test-org/deployment
-              deploymentRepoPath: svc-b
           environments:
             - name: dev
               clusterName: dev-cluster
@@ -147,6 +161,7 @@ jobs:
               account: test-account
               location: us-east1
               namespace: dev
+              autoDeploy: true
           YAML
 
           git add -A && git commit -m "init" && git push -u origin main
@@ -167,10 +182,10 @@ jobs:
 
       - name: Verify counters increment past existing tags
         run: |
-          echo "Matrix: ${{ steps.matrix.outputs.matrix }}"
+          echo "Deploy matrix: ${{ steps.matrix.outputs.deploy_matrix }}"
 
-          SVC_A_TAG=$(echo '${{ steps.matrix.outputs.matrix }}' | jq -r '.include[] | select(.service_name == "svc-a") | .service_tag')
-          SVC_B_TAG=$(echo '${{ steps.matrix.outputs.matrix }}' | jq -r '.include[] | select(.service_name == "svc-b") | .service_tag')
+          SVC_A_TAG=$(echo '${{ steps.matrix.outputs.deploy_matrix }}' | jq -r '.include[] | select(.service_name == "svc-a") | .service_tag')
+          SVC_B_TAG=$(echo '${{ steps.matrix.outputs.deploy_matrix }}' | jq -r '.include[] | select(.service_name == "svc-b") | .service_tag')
 
           echo "svc-a tag: $SVC_A_TAG"
           echo "svc-b tag: $SVC_B_TAG"
@@ -208,8 +223,6 @@ jobs:
           services:
             - name: service1
               path: apps/service1
-              deploymentRepo: test-org/deployment
-              deploymentRepoPath: service1
 
           environments:
             - name: dev
@@ -218,6 +231,7 @@ jobs:
               account: test-account
               location: us-east1
               namespace: dev
+              autoDeploy: true
             - name: staging
               clusterName: staging-cluster
               cloudProvider: gcp
@@ -244,17 +258,25 @@ jobs:
 
       - name: Verify filtered matrix
         run: |
-          echo "Matrix: ${{ steps.matrix.outputs.matrix }}"
+          echo "Build matrix: ${{ steps.matrix.outputs.build_matrix }}"
+          echo "Deploy matrix: ${{ steps.matrix.outputs.deploy_matrix }}"
 
-          # Should only have 1 entry (1 service x 1 environment)
-          ENTRY_COUNT=$(echo '${{ steps.matrix.outputs.matrix }}' | jq '.include | length')
-          if [[ $ENTRY_COUNT -ne 1 ]]; then
-            echo "Expected 1 entry with dev filter, got $ENTRY_COUNT"
+          # build_matrix should have 1 service
+          BUILD_COUNT=$(echo '${{ steps.matrix.outputs.build_matrix }}' | jq '.include | length')
+          if [[ $BUILD_COUNT -ne 1 ]]; then
+            echo "Expected 1 build entry, got $BUILD_COUNT"
+            exit 1
+          fi
+
+          # deploy_matrix should have 1 entry (dev has autoDeploy and matches filter)
+          DEPLOY_COUNT=$(echo '${{ steps.matrix.outputs.deploy_matrix }}' | jq '.include | length')
+          if [[ $DEPLOY_COUNT -ne 1 ]]; then
+            echo "Expected 1 deploy entry with dev filter, got $DEPLOY_COUNT"
             exit 1
           fi
 
           # Verify it's dev environment
-          OVERLAY=$(echo '${{ steps.matrix.outputs.matrix }}' | jq -r '.include[0].overlay')
+          OVERLAY=$(echo '${{ steps.matrix.outputs.deploy_matrix }}' | jq -r '.include[0].overlay')
           if [[ "$OVERLAY" != "dev" ]]; then
             echo "Expected overlay 'dev', got $OVERLAY"
             exit 1
