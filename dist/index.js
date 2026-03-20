@@ -32502,7 +32502,9 @@ const { resolveServiceEnvironments, readKustomizeImages } = __nccwpck_require__(
 async function run() {
   try {
     const overlay = core.getInput('overlay');
-    const branch = core.getInput('branch') || '';
+    const rawBranch = core.getInput('branch') || '';
+    // Treat "HEAD" as empty so git clone uses the remote's default branch
+    const branch = rawBranch === 'HEAD' ? '' : rawBranch;
     const tag = core.getInput('tag');
     const repoPath = core.getInput('repo-path') || '.';
     const onDiscoveryFailure = core.getInput('on-discovery-failure') || 'skip';
