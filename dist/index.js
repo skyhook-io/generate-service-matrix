@@ -32724,10 +32724,14 @@ async function processSkyhookConfig(skyhookPath, tag, overlay, repoPath, service
   for (const service of config.services) {
     if (service.deploymentRepo) {
       core.info(`🔍 Resolving environments for ${service.name} from deployment repo ${service.deploymentRepo}`);
-      const envs = await resolveServiceEnvironments(
-        service, branch, githubTokens, cloneCache, envConfigCache
-      );
-      perServiceEnvs.set(service.name, envs);
+      try {
+        const envs = await resolveServiceEnvironments(
+          service, branch, githubTokens, cloneCache, envConfigCache
+        );
+        perServiceEnvs.set(service.name, envs);
+      } catch (err) {
+        core.warning(`Failed to resolve environments from deployment repo for ${service.name}: ${err.message}. Falling back to local skyhook.yaml environments.`);
+      }
     }
   }
 
