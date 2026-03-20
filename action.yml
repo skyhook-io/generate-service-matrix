@@ -23,6 +23,10 @@ inputs:
     description: 'The path to the repo'
     required: false
     default: '.'
+  on-discovery-failure:
+    description: 'How to handle service discovery failures (e.g. deployment repo clone errors). "fail" aborts the entire action. "skip" excludes services with incomplete metadata from the output with warning logs.'
+    required: false
+    default: 'skip'
 
 outputs:
   matrix:

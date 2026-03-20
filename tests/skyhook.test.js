@@ -405,7 +405,22 @@ describe('cloneDeploymentRepo', () => {
     ).rejects.toThrow('Failed to clone org/repo@main');
 
     expect(exec.exec).toHaveBeenCalledTimes(2);
-    expect(cache.size).toBe(0);
+    expect(cache.get('org/repo:main')).toBeNull();
+  });
+
+  test('skips retry when clone already failed (cached null)', async () => {
+    exec.exec = jest.fn(async () => {
+      throw new Error('Should not be called');
+    });
+
+    const cache = new Map();
+    cache.set('org/repo:main', null); // pre-seed failed clone
+
+    await expect(
+      cloneDeploymentRepo('org/repo', 'main', ['token'], cache)
+    ).rejects.toThrow('already failed (skipping retry)');
+
+    expect(exec.exec).not.toHaveBeenCalled();
   });
 });
 
