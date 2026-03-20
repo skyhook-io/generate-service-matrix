@@ -126,11 +126,16 @@ async function run() {
           images = imageList.join('\n');
         }
       }
-      buildMatrixInclude.push({
+      const serviceTag = skyhookMatrix && skyhookMatrix.serviceTags ? skyhookMatrix.serviceTags.get(service.name) : undefined;
+      const entry = {
         service_name: service.name,
         service_dir: service.path,
         images
-      });
+      };
+      if (serviceTag) {
+        entry.service_tag = serviceTag;
+      }
+      buildMatrixInclude.push(entry);
     }
 
     const buildMatrix = { include: buildMatrixInclude };

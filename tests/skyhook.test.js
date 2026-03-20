@@ -158,10 +158,11 @@ describe('buildMatrixFromSkyhook', () => {
     const vcsEntries = matrix.include.filter(e => e.service_name === 'vcs');
     const infraEntries = matrix.include.filter(e => e.service_name === 'project-infra');
 
+    // service_tag is computed once per service, same across all environments
     expect(vcsEntries[0].service_tag).toBe('vcs_v1.0.0_01');
-    expect(vcsEntries[1].service_tag).toBe('vcs_v1.0.0_02');
+    expect(vcsEntries[1].service_tag).toBe('vcs_v1.0.0_01');
     expect(infraEntries[0].service_tag).toBe('project-infra_v1.0.0_01');
-    expect(infraEntries[1].service_tag).toBe('project-infra_v1.0.0_02');
+    expect(infraEntries[1].service_tag).toBe('project-infra_v1.0.0_01');
   });
 
   test('continues counter from serviceCounters map', () => {
@@ -175,8 +176,9 @@ describe('buildMatrixFromSkyhook', () => {
     });
 
     const vcsEntries = matrix.include.filter(e => e.service_name === 'vcs');
+    // service_tag is computed once per service
     expect(vcsEntries[0].service_tag).toBe('vcs_v1.0.0_06');
-    expect(vcsEntries[1].service_tag).toBe('vcs_v1.0.0_07');
+    expect(vcsEntries[1].service_tag).toBe('vcs_v1.0.0_06');
 
     // project-infra should start at _01 since it wasn't in the map
     const infraEntries = matrix.include.filter(e => e.service_name === 'project-infra');
