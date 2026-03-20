@@ -16,6 +16,7 @@ async function run() {
     const tag = core.getInput('tag');
     const repoPath = core.getInput('repo-path') || '.';
     const onDiscoveryFailure = core.getInput('on-discovery-failure') || 'skip';
+    const kustomizeImageFallback = core.getInput('kustomize-image-fallback') === 'true';
 
     // Collect all available tokens (deduplicated, ordered by priority)
     const inputToken = core.getInput('github-token');
@@ -119,7 +120,8 @@ async function run() {
           const imageList = readKustomizeImages(
             clonedPath,
             service.deploymentRepoPath || service.name,
-            service.name
+            service.name,
+            { fallback: kustomizeImageFallback }
           );
           images = imageList.join('\n');
         }

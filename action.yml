@@ -27,6 +27,15 @@ inputs:
     description: 'How to handle service discovery failures (e.g. deployment repo clone errors). "fail" aborts the entire action. "skip" excludes services with incomplete metadata from the output with warning logs.'
     required: false
     default: 'skip'
+  kustomize-image-fallback:
+    description: >
+      Enable heuristic fallback for kustomize image resolution.
+      By default, images are matched by exact name (images[].name === service name).
+      When set to "true", if no exact match is found and the kustomization file
+      contains exactly one image entry, that image is used (preferring newName, then name).
+      Files with multiple images are never used as fallback to avoid ambiguity.
+    required: false
+    default: 'false'
 
 outputs:
   matrix:
