@@ -35,7 +35,7 @@ inputs:
       contains exactly one image entry, that image is used (preferring newName, then name).
       Files with multiple images are never used as fallback to avoid ambiguity.
     required: false
-    default: 'false'
+    default: 'true'
 
 outputs:
   matrix:
