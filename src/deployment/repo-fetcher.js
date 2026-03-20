@@ -179,12 +179,21 @@ async function resolveServiceEnvironments(service, branch, githubTokens, cloneCa
 /**
  * Read kustomization.yaml images for a service across all overlays.
  * Looks for `images:` entries where `name === serviceName` and collects `newName` values.
+ *
+ * When `fallback` is true and no exact match is found in a given overlay,
+ * falls back to using the single image entry if exactly one exists
+ * (prefers newName, then name). Overlays with multiple images are never
+ * used as fallback to avoid ambiguous guesses.
+ *
  * @param {string} clonedRepoPath - path to cloned repo root
  * @param {string} deploymentRepoPath - service path within the deployment repo (e.g. "vcs")
  * @param {string} serviceName - service name to match in images[].name
+ * @param {Object} [options]
+ * @param {boolean} [options.fallback=false] - enable single-image heuristic fallback
  * @returns {string[]} - deduplicated array of image references (newName values)
  */
-function readKustomizeImages(clonedRepoPath, deploymentRepoPath, serviceName) {
+function readKustomizeImages(clonedRepoPath, deploymentRepoPath, serviceName, options = {}) {
+  const { fallback = false } = options;
   const overlaysDir = path.join(clonedRepoPath, deploymentRepoPath, 'deploy', 'overlays');
 
   if (!fs.existsSync(overlaysDir)) {
@@ -215,10 +224,25 @@ function readKustomizeImages(clonedRepoPath, deploymentRepoPath, serviceName) {
       const parsed = yaml.load(content);
 
       if (parsed && Array.isArray(parsed.images)) {
+        // Try exact match first
+        let matched = false;
         for (const img of parsed.images) {
           if (img.name === serviceName && img.newName) {
             imageSet.add(img.newName);
+            matched = true;
           }
+        }
+
+        // Heuristic fallback: if no exact match, use the sole image entry
+        if (!matched && fallback && parsed.images.length === 1) {
+          const img = parsed.images[0];
+          const resolved = img.newName || img.name;
+          if (resolved) {
+            core.info(`Fallback: using sole image from ${overlay} overlay for service ${serviceName}: ${resolved}`);
+            imageSet.add(resolved);
+          }
+        } else if (!matched && fallback && parsed.images.length > 1) {
+          core.info(`Fallback skipped for ${overlay} overlay: ${parsed.images.length} images found, cannot disambiguate for service ${serviceName}`);
         }
       }
     } catch (err) {

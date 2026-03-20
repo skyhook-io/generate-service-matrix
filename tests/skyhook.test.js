@@ -753,6 +753,69 @@ describe('readKustomizeImages', () => {
     const images = readKustomizeImages(tmpDir, 'my-svc', 'my-svc');
     expect(images).toEqual(['gcr.io/project/my-svc']);
   });
+
+  describe('fallback option', () => {
+    test('uses sole image newName when fallback enabled and no exact match', () => {
+      const overlayDir = path.join(tmpDir, 'my-svc', 'deploy', 'overlays', 'dev');
+      fs.mkdirSync(overlayDir, { recursive: true });
+      fs.writeFileSync(path.join(overlayDir, 'kustomization.yaml'), yaml.dump({
+        images: [{ name: 'different-name', newName: 'gcr.io/project/my-image' }]
+      }));
+
+      const images = readKustomizeImages(tmpDir, 'my-svc', 'my-svc', { fallback: true });
+      expect(images).toEqual(['gcr.io/project/my-image']);
+    });
+
+    test('uses sole image name when fallback enabled and no newName', () => {
+      const overlayDir = path.join(tmpDir, 'my-svc', 'deploy', 'overlays', 'dev');
+      fs.mkdirSync(overlayDir, { recursive: true });
+      fs.writeFileSync(path.join(overlayDir, 'kustomization.yaml'), yaml.dump({
+        images: [{ name: 'gcr.io/project/my-image' }]
+      }));
+
+      const images = readKustomizeImages(tmpDir, 'my-svc', 'my-svc', { fallback: true });
+      expect(images).toEqual(['gcr.io/project/my-image']);
+    });
+
+    test('does not fallback when multiple images exist', () => {
+      const overlayDir = path.join(tmpDir, 'my-svc', 'deploy', 'overlays', 'dev');
+      fs.mkdirSync(overlayDir, { recursive: true });
+      fs.writeFileSync(path.join(overlayDir, 'kustomization.yaml'), yaml.dump({
+        images: [
+          { name: 'image-a', newName: 'gcr.io/project/a' },
+          { name: 'image-b', newName: 'gcr.io/project/b' }
+        ]
+      }));
+
+      const images = readKustomizeImages(tmpDir, 'my-svc', 'my-svc', { fallback: true });
+      expect(images).toEqual([]);
+    });
+
+    test('does not fallback when fallback is disabled (default)', () => {
+      const overlayDir = path.join(tmpDir, 'my-svc', 'deploy', 'overlays', 'dev');
+      fs.mkdirSync(overlayDir, { recursive: true });
+      fs.writeFileSync(path.join(overlayDir, 'kustomization.yaml'), yaml.dump({
+        images: [{ name: 'different-name', newName: 'gcr.io/project/my-image' }]
+      }));
+
+      const images = readKustomizeImages(tmpDir, 'my-svc', 'my-svc');
+      expect(images).toEqual([]);
+    });
+
+    test('prefers exact match over fallback', () => {
+      const overlayDir = path.join(tmpDir, 'my-svc', 'deploy', 'overlays', 'dev');
+      fs.mkdirSync(overlayDir, { recursive: true });
+      fs.writeFileSync(path.join(overlayDir, 'kustomization.yaml'), yaml.dump({
+        images: [
+          { name: 'my-svc', newName: 'gcr.io/project/exact-match' },
+          { name: 'other', newName: 'gcr.io/project/other' }
+        ]
+      }));
+
+      const images = readKustomizeImages(tmpDir, 'my-svc', 'my-svc', { fallback: true });
+      expect(images).toEqual(['gcr.io/project/exact-match']);
+    });
+  });
 });
 
 describe('deploy_matrix filtering', () => {
