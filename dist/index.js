@@ -30505,6 +30505,9 @@ function buildMatrixFromSkyhook(services, environments, options = {}) {
   core.info(`   - Services count: ${services.length}`);
 
   // Build matrix entries for each service x environment combination
+  // service_tag is computed once per service (not per environment)
+  const serviceTags = new Map();
+
   for (const service of services) {
     // Use per-service environments if available (from deployment repo), otherwise fall back to global
     let serviceEnvs = perServiceEnvs.has(service.name) ? perServiceEnvs.get(service.name) : environments;
@@ -30516,17 +30519,22 @@ function buildMatrixFromSkyhook(services, environments, options = {}) {
 
     core.info(`   - ${service.name}: ${serviceEnvs.length} environments${perServiceEnvs.has(service.name) ? ' (from deployment repo)' : ' (from local config)'}`);
 
-    for (const env of serviceEnvs) {
-      // Get next counter for this service (per-service counter)
-      const currentCounter = counters.get(service.name) || 0;
-      const nextCounter = currentCounter + 1;
-      counters.set(service.name, nextCounter);
+    // Compute service_tag once per service
+    const currentCounter = counters.get(service.name) || 0;
+    const nextCounter = currentCounter + 1;
+    counters.set(service.name, nextCounter);
+    const counterStr = String(nextCounter).padStart(2, '0');
+    const serviceTag = `${service.name}_${tag}_${counterStr}`;
+    serviceTags.set(service.name, serviceTag);
 
+    for (const env of serviceEnvs) {
       core.info(`\n🔧 Creating entry for ${service.name} (counter: ${nextCounter}):`);
-      const entry = createDeploymentEntry(service, env, tag, serviceRepo, nextCounter);
+      const entry = createDeploymentEntry(service, env, tag, serviceRepo, serviceTag);
       matrix.addEntry(entry);
     }
   }
+
+  matrix.serviceTags = serviceTags;
 
   return matrix;
 }
@@ -30537,12 +30545,10 @@ function buildMatrixFromSkyhook(services, environments, options = {}) {
  * @param {Object} env - Environment configuration from skyhook.yaml
  * @param {string} tag - Image tag
  * @param {string} serviceRepo - Source repository
- * @param {number} counter - Counter for unique service tag (per-service)
+ * @param {string} serviceTag - Pre-computed service tag (one per service)
  * @returns {DeploymentEntry}
  */
-function createDeploymentEntry(service, env, tag, serviceRepo, counter) {
-  const counterStr = String(counter).padStart(2, '0');
-  const serviceTag = `${service.name}_${tag}_${counterStr}`;
+function createDeploymentEntry(service, env, tag, serviceRepo, serviceTag) {
 
   // Log where each value comes from
   core.info(`   service_name: "${service.name}" (from skyhook.yaml services[].name)`);
@@ -32644,11 +32650,16 @@ async function run() {
           images = imageList.join('\n');
         }
       }
-      buildMatrixInclude.push({
+      const serviceTag = skyhookMatrix && skyhookMatrix.serviceTags ? skyhookMatrix.serviceTags.get(service.name) : undefined;
+      const entry = {
         service_name: service.name,
         service_dir: service.path,
         images
-      });
+      };
+      if (serviceTag) {
+        entry.service_tag = serviceTag;
+      }
+      buildMatrixInclude.push(entry);
     }
 
     const buildMatrix = { include: buildMatrixInclude };
