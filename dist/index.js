@@ -30294,7 +30294,7 @@ async function cloneDeploymentRepo(repoFullName, branch, githubTokens, cloneCach
  * @returns {string[]} - array of environment/overlay names
  */
 function listServiceOverlays(clonedRepoPath, deploymentRepoPath) {
-  const overlaysDir = path.join(clonedRepoPath, deploymentRepoPath, 'overlays');
+  const overlaysDir = path.join(clonedRepoPath, deploymentRepoPath, 'deploy', 'overlays');
 
   if (!fs.existsSync(overlaysDir)) {
     core.warning(`Overlays directory not found: ${overlaysDir}`);
@@ -30365,7 +30365,9 @@ async function resolveServiceEnvironments(service, branch, githubTokens, cloneCa
   const overlayNames = listServiceOverlays(clonedPath, service.deploymentRepoPath || service.name);
 
   if (overlayNames.length === 0) {
-    core.warning(`No overlays found for service ${service.name} in ${service.deploymentRepo}`);
+    const servicePath = service.deploymentRepoPath || service.name;
+    const expectedDir = path.join(clonedPath, servicePath, 'deploy', 'overlays');
+    core.warning(`No overlays found for service ${service.name} in ${service.deploymentRepo} (looked in ${expectedDir})`);
     return [];
   }
 
@@ -30391,7 +30393,7 @@ async function resolveServiceEnvironments(service, branch, githubTokens, cloneCa
  * @returns {string[]} - deduplicated array of image references (newName values)
  */
 function readKustomizeImages(clonedRepoPath, deploymentRepoPath, serviceName) {
-  const overlaysDir = path.join(clonedRepoPath, deploymentRepoPath, 'overlays');
+  const overlaysDir = path.join(clonedRepoPath, deploymentRepoPath, 'deploy', 'overlays');
 
   if (!fs.existsSync(overlaysDir)) {
     core.info(`No overlays directory found at ${overlaysDir}, skipping image extraction`);

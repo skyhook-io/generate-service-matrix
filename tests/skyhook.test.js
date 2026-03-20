@@ -441,7 +441,7 @@ describe('resolveServiceEnvironments', () => {
   function setupDeploymentRepoFixture(repoDir, servicePath, overlays, envConfigs) {
     // Create overlay dirs
     for (const overlay of overlays) {
-      fs.mkdirSync(path.join(repoDir, servicePath, 'overlays', overlay), { recursive: true });
+      fs.mkdirSync(path.join(repoDir, servicePath, 'deploy', 'overlays', overlay), { recursive: true });
     }
     // Create env config files
     if (envConfigs) {
@@ -555,7 +555,7 @@ describe('repo-fetcher', () => {
 
   describe('listServiceOverlays', () => {
     test('lists overlay directories', () => {
-      const overlaysDir = path.join(tmpDir, 'my-service', 'overlays');
+      const overlaysDir = path.join(tmpDir, 'my-service', 'deploy', 'overlays');
       fs.mkdirSync(path.join(overlaysDir, 'dev'), { recursive: true });
       fs.mkdirSync(path.join(overlaysDir, 'staging'), { recursive: true });
       fs.mkdirSync(path.join(overlaysDir, 'prod'), { recursive: true });
@@ -668,7 +668,7 @@ describe('readKustomizeImages', () => {
   });
 
   test('extracts newName from kustomization.yaml matching service name', () => {
-    const overlayDir = path.join(tmpDir, 'my-svc', 'overlays', 'dev');
+    const overlayDir = path.join(tmpDir, 'my-svc', 'deploy', 'overlays', 'dev');
     fs.mkdirSync(overlayDir, { recursive: true });
     fs.writeFileSync(path.join(overlayDir, 'kustomization.yaml'), yaml.dump({
       images: [
@@ -683,7 +683,7 @@ describe('readKustomizeImages', () => {
 
   test('deduplicates images across overlays', () => {
     for (const overlay of ['dev', 'staging', 'prod']) {
-      const overlayDir = path.join(tmpDir, 'my-svc', 'overlays', overlay);
+      const overlayDir = path.join(tmpDir, 'my-svc', 'deploy', 'overlays', overlay);
       fs.mkdirSync(overlayDir, { recursive: true });
       fs.writeFileSync(path.join(overlayDir, 'kustomization.yaml'), yaml.dump({
         images: [
@@ -697,8 +697,8 @@ describe('readKustomizeImages', () => {
   });
 
   test('collects different images from different overlays', () => {
-    const devDir = path.join(tmpDir, 'my-svc', 'overlays', 'dev');
-    const prodDir = path.join(tmpDir, 'my-svc', 'overlays', 'prod');
+    const devDir = path.join(tmpDir, 'my-svc', 'deploy', 'overlays', 'dev');
+    const prodDir = path.join(tmpDir, 'my-svc', 'deploy', 'overlays', 'prod');
     fs.mkdirSync(devDir, { recursive: true });
     fs.mkdirSync(prodDir, { recursive: true });
 
@@ -714,7 +714,7 @@ describe('readKustomizeImages', () => {
   });
 
   test('supports kustomization.yml extension', () => {
-    const overlayDir = path.join(tmpDir, 'my-svc', 'overlays', 'dev');
+    const overlayDir = path.join(tmpDir, 'my-svc', 'deploy', 'overlays', 'dev');
     fs.mkdirSync(overlayDir, { recursive: true });
     fs.writeFileSync(path.join(overlayDir, 'kustomization.yml'), yaml.dump({
       images: [{ name: 'my-svc', newName: 'us-docker.pkg.dev/proj/repo/my-svc' }]
@@ -730,7 +730,7 @@ describe('readKustomizeImages', () => {
   });
 
   test('returns empty array when no images match service name', () => {
-    const overlayDir = path.join(tmpDir, 'my-svc', 'overlays', 'dev');
+    const overlayDir = path.join(tmpDir, 'my-svc', 'deploy', 'overlays', 'dev');
     fs.mkdirSync(overlayDir, { recursive: true });
     fs.writeFileSync(path.join(overlayDir, 'kustomization.yaml'), yaml.dump({
       images: [{ name: 'other-svc', newName: 'gcr.io/project/other-svc' }]
@@ -741,8 +741,8 @@ describe('readKustomizeImages', () => {
   });
 
   test('skips overlays without kustomization file', () => {
-    const devDir = path.join(tmpDir, 'my-svc', 'overlays', 'dev');
-    const emptyDir = path.join(tmpDir, 'my-svc', 'overlays', 'empty');
+    const devDir = path.join(tmpDir, 'my-svc', 'deploy', 'overlays', 'dev');
+    const emptyDir = path.join(tmpDir, 'my-svc', 'deploy', 'overlays', 'empty');
     fs.mkdirSync(devDir, { recursive: true });
     fs.mkdirSync(emptyDir, { recursive: true });
 
