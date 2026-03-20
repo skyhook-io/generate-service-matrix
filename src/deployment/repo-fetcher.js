@@ -161,9 +161,63 @@ async function resolveServiceEnvironments(service, branch, githubTokens, cloneCa
   return environments;
 }
 
+/**
+ * Read kustomization.yaml images for a service across all overlays.
+ * Looks for `images:` entries where `name === serviceName` and collects `newName` values.
+ * @param {string} clonedRepoPath - path to cloned repo root
+ * @param {string} deploymentRepoPath - service path within the deployment repo (e.g. "vcs")
+ * @param {string} serviceName - service name to match in images[].name
+ * @returns {string[]} - deduplicated array of image references (newName values)
+ */
+function readKustomizeImages(clonedRepoPath, deploymentRepoPath, serviceName) {
+  const overlaysDir = path.join(clonedRepoPath, deploymentRepoPath, 'overlays');
+
+  if (!fs.existsSync(overlaysDir)) {
+    core.info(`No overlays directory found at ${overlaysDir}, skipping image extraction`);
+    return [];
+  }
+
+  const overlayDirs = fs.readdirSync(overlaysDir, { withFileTypes: true })
+    .filter(e => e.isDirectory())
+    .map(e => e.name);
+
+  const imageSet = new Set();
+
+  for (const overlay of overlayDirs) {
+    const overlayPath = path.join(overlaysDir, overlay);
+
+    // Try kustomization.yaml then kustomization.yml
+    let kustomizationPath = path.join(overlayPath, 'kustomization.yaml');
+    if (!fs.existsSync(kustomizationPath)) {
+      kustomizationPath = path.join(overlayPath, 'kustomization.yml');
+    }
+    if (!fs.existsSync(kustomizationPath)) {
+      continue;
+    }
+
+    try {
+      const content = fs.readFileSync(kustomizationPath, 'utf8');
+      const parsed = yaml.load(content);
+
+      if (parsed && Array.isArray(parsed.images)) {
+        for (const img of parsed.images) {
+          if (img.name === serviceName && img.newName) {
+            imageSet.add(img.newName);
+          }
+        }
+      }
+    } catch (err) {
+      core.warning(`Failed to parse ${kustomizationPath}: ${err.message}`);
+    }
+  }
+
+  return Array.from(imageSet);
+}
+
 module.exports = {
   cloneDeploymentRepo,
   listServiceOverlays,
   readEnvironmentConfig,
-  resolveServiceEnvironments
+  resolveServiceEnvironments,
+  readKustomizeImages
 };

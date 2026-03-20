@@ -3,7 +3,7 @@ const { parseSkyhookConfig, validateSkyhookConfig } = require('../src/config/sky
 const { detectConfigFormats } = require('../src/config/config-detector');
 const { buildMatrixFromSkyhook } = require('../src/matrix/matrix-builder');
 const { DeploymentMatrix, DeploymentEntry } = require('../src/DeploymentMatrix');
-const { cloneDeploymentRepo, listServiceOverlays, readEnvironmentConfig, resolveServiceEnvironments } = require('../src/deployment/repo-fetcher');
+const { cloneDeploymentRepo, listServiceOverlays, readEnvironmentConfig, resolveServiceEnvironments, readKustomizeImages } = require('../src/deployment/repo-fetcher');
 const exec = require('@actions/exec');
 const fs = require('fs');
 const path = require('path');
@@ -638,6 +638,130 @@ describe('repo-fetcher', () => {
       const env = readEnvironmentConfig(tmpDir, 'org/repo', 'main', 'staging', cache);
       expect(env.autoDeploy).toBe(false);
     });
+  });
+});
+
+describe('readKustomizeImages', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kustomize-images-test-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test('extracts newName from kustomization.yaml matching service name', () => {
+    const overlayDir = path.join(tmpDir, 'my-svc', 'overlays', 'dev');
+    fs.mkdirSync(overlayDir, { recursive: true });
+    fs.writeFileSync(path.join(overlayDir, 'kustomization.yaml'), yaml.dump({
+      images: [
+        { name: 'my-svc', newName: 'gcr.io/project/my-svc' },
+        { name: 'other-svc', newName: 'gcr.io/project/other-svc' }
+      ]
+    }));
+
+    const images = readKustomizeImages(tmpDir, 'my-svc', 'my-svc');
+    expect(images).toEqual(['gcr.io/project/my-svc']);
+  });
+
+  test('deduplicates images across overlays', () => {
+    for (const overlay of ['dev', 'staging', 'prod']) {
+      const overlayDir = path.join(tmpDir, 'my-svc', 'overlays', overlay);
+      fs.mkdirSync(overlayDir, { recursive: true });
+      fs.writeFileSync(path.join(overlayDir, 'kustomization.yaml'), yaml.dump({
+        images: [
+          { name: 'my-svc', newName: 'gcr.io/project/my-svc' }
+        ]
+      }));
+    }
+
+    const images = readKustomizeImages(tmpDir, 'my-svc', 'my-svc');
+    expect(images).toEqual(['gcr.io/project/my-svc']);
+  });
+
+  test('collects different images from different overlays', () => {
+    const devDir = path.join(tmpDir, 'my-svc', 'overlays', 'dev');
+    const prodDir = path.join(tmpDir, 'my-svc', 'overlays', 'prod');
+    fs.mkdirSync(devDir, { recursive: true });
+    fs.mkdirSync(prodDir, { recursive: true });
+
+    fs.writeFileSync(path.join(devDir, 'kustomization.yaml'), yaml.dump({
+      images: [{ name: 'my-svc', newName: 'gcr.io/dev/my-svc' }]
+    }));
+    fs.writeFileSync(path.join(prodDir, 'kustomization.yaml'), yaml.dump({
+      images: [{ name: 'my-svc', newName: 'gcr.io/prod/my-svc' }]
+    }));
+
+    const images = readKustomizeImages(tmpDir, 'my-svc', 'my-svc');
+    expect(images.sort()).toEqual(['gcr.io/dev/my-svc', 'gcr.io/prod/my-svc']);
+  });
+
+  test('supports kustomization.yml extension', () => {
+    const overlayDir = path.join(tmpDir, 'my-svc', 'overlays', 'dev');
+    fs.mkdirSync(overlayDir, { recursive: true });
+    fs.writeFileSync(path.join(overlayDir, 'kustomization.yml'), yaml.dump({
+      images: [{ name: 'my-svc', newName: 'us-docker.pkg.dev/proj/repo/my-svc' }]
+    }));
+
+    const images = readKustomizeImages(tmpDir, 'my-svc', 'my-svc');
+    expect(images).toEqual(['us-docker.pkg.dev/proj/repo/my-svc']);
+  });
+
+  test('returns empty array when no overlays dir exists', () => {
+    const images = readKustomizeImages(tmpDir, 'nonexistent', 'nonexistent');
+    expect(images).toEqual([]);
+  });
+
+  test('returns empty array when no images match service name', () => {
+    const overlayDir = path.join(tmpDir, 'my-svc', 'overlays', 'dev');
+    fs.mkdirSync(overlayDir, { recursive: true });
+    fs.writeFileSync(path.join(overlayDir, 'kustomization.yaml'), yaml.dump({
+      images: [{ name: 'other-svc', newName: 'gcr.io/project/other-svc' }]
+    }));
+
+    const images = readKustomizeImages(tmpDir, 'my-svc', 'my-svc');
+    expect(images).toEqual([]);
+  });
+
+  test('skips overlays without kustomization file', () => {
+    const devDir = path.join(tmpDir, 'my-svc', 'overlays', 'dev');
+    const emptyDir = path.join(tmpDir, 'my-svc', 'overlays', 'empty');
+    fs.mkdirSync(devDir, { recursive: true });
+    fs.mkdirSync(emptyDir, { recursive: true });
+
+    fs.writeFileSync(path.join(devDir, 'kustomization.yaml'), yaml.dump({
+      images: [{ name: 'my-svc', newName: 'gcr.io/project/my-svc' }]
+    }));
+
+    const images = readKustomizeImages(tmpDir, 'my-svc', 'my-svc');
+    expect(images).toEqual(['gcr.io/project/my-svc']);
+  });
+});
+
+describe('deploy_matrix filtering', () => {
+  test('filters to only auto_deploy entries', () => {
+    const matrix = new DeploymentMatrix([
+      new DeploymentEntry({ service_name: 'svc1', overlay: 'dev', auto_deploy: 'true', service_tag: 'svc1_v1_01' }),
+      new DeploymentEntry({ service_name: 'svc1', overlay: 'prod', auto_deploy: 'false', service_tag: 'svc1_v1_02' }),
+      new DeploymentEntry({ service_name: 'svc2', overlay: 'dev', auto_deploy: 'true', service_tag: 'svc2_v1_01' })
+    ]);
+
+    const deployEntries = matrix.include.filter(e => e.auto_deploy === 'true');
+    expect(deployEntries).toHaveLength(2);
+    expect(deployEntries.map(e => e.service_name)).toEqual(['svc1', 'svc2']);
+    expect(deployEntries.every(e => e.auto_deploy === 'true')).toBe(true);
+  });
+
+  test('returns empty include when no entries have auto_deploy true', () => {
+    const matrix = new DeploymentMatrix([
+      new DeploymentEntry({ service_name: 'svc1', overlay: 'dev', auto_deploy: 'false', service_tag: 'svc1_v1_01' }),
+      new DeploymentEntry({ service_name: 'svc1', overlay: 'prod', auto_deploy: 'false', service_tag: 'svc1_v1_02' })
+    ]);
+
+    const deployEntries = matrix.include.filter(e => e.auto_deploy === 'true');
+    expect(deployEntries).toHaveLength(0);
   });
 });
 
