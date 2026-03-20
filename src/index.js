@@ -88,7 +88,7 @@ async function run() {
             service.deploymentRepoPath || service.name,
             service.name
           );
-          images = imageList.join(',');
+          images = imageList.join('\n');
         }
       }
       buildMatrixInclude.push({
