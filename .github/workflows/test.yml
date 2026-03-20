@@ -1,0 +1,263 @@
+name: Test
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    name: Run unit tests
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+  test-skyhook-config:
+    runs-on: ubuntu-latest
+    name: Test Skyhook configuration
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create Skyhook config
+        run: |
+          mkdir -p .skyhook
+          cat > .skyhook/skyhook.yaml << 'EOF'
+          services:
+            - name: vcs
+              path: apps/vcs
+              deploymentRepo: test-org/deployment
+              deploymentRepoPath: vcs
+            - name: api
+              path: apps/api
+              deploymentRepo: test-org/deployment
+              deploymentRepoPath: api
+
+          environments:
+            - name: dev
+              clusterName: dev-cluster
+              cloudProvider: gcp
+              account: test-account
+              location: us-east1-b
+              namespace: dev
+            - name: prod
+              clusterName: prod-cluster
+              cloudProvider: gcp
+              account: test-account
+              location: us-east1-b
+              namespace: prod
+          EOF
+
+          mkdir -p apps/vcs apps/api
+          echo "Skyhook config created"
+
+      - name: Test Skyhook matrix generation
+        id: matrix
+        uses: ./
+        with:
+          tag: v1.0.0
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify Skyhook matrix
+        run: |
+          echo "Matrix: ${{ steps.matrix.outputs.matrix }}"
+          echo '${{ steps.matrix.outputs.matrix }}' | jq .
+
+          # Verify entry count (2 services x 2 environments = 4)
+          ENTRY_COUNT=$(echo '${{ steps.matrix.outputs.matrix }}' | jq '.include | length')
+          if [[ $ENTRY_COUNT -ne 4 ]]; then
+            echo "Expected 4 matrix entries, got $ENTRY_COUNT"
+            exit 1
+          fi
+
+          # Verify service names
+          VCS_COUNT=$(echo '${{ steps.matrix.outputs.matrix }}' | jq '[.include[] | select(.service_name == "vcs")] | length')
+          API_COUNT=$(echo '${{ steps.matrix.outputs.matrix }}' | jq '[.include[] | select(.service_name == "api")] | length')
+          if [[ $VCS_COUNT -ne 2 ]] || [[ $API_COUNT -ne 2 ]]; then
+            echo "Expected 2 entries each for vcs and api"
+            exit 1
+          fi
+
+          # Verify per-service counter in service_tag
+          VCS_DEV_TAG=$(echo '${{ steps.matrix.outputs.matrix }}' | jq -r '.include[] | select(.service_name == "vcs" and .overlay == "dev") | .service_tag')
+          API_DEV_TAG=$(echo '${{ steps.matrix.outputs.matrix }}' | jq -r '.include[] | select(.service_name == "api" and .overlay == "dev") | .service_tag')
+
+          if [[ "$VCS_DEV_TAG" != "vcs_v1.0.0_01" ]]; then
+            echo "Expected vcs_v1.0.0_01, got $VCS_DEV_TAG"
+            exit 1
+          fi
+
+          if [[ "$API_DEV_TAG" != "api_v1.0.0_01" ]]; then
+            echo "Expected api_v1.0.0_01, got $API_DEV_TAG"
+            exit 1
+          fi
+
+          echo "✅ Skyhook configuration working correctly"
+
+  test-skyhook-existing-tags:
+    runs-on: ubuntu-latest
+    name: Test Skyhook counter respects existing tags
+    steps:
+      - name: Checkout action source
+        uses: actions/checkout@v4
+        with:
+          path: action-src
+
+      - name: Setup test repo with existing tags
+        run: |
+          # Create a bare remote and working clone
+          git init --bare /tmp/test-remote.git
+          git clone /tmp/test-remote.git /tmp/test-repo
+          cd /tmp/test-repo
+          git config user.email "test@test.com"
+          git config user.name "Test"
+          git checkout -b main
+
+          # Create skyhook config with two services
+          mkdir -p .skyhook apps/svc-a apps/svc-b
+          cat > .skyhook/skyhook.yaml << 'YAML'
+          services:
+            - name: svc-a
+              path: apps/svc-a
+              deploymentRepo: test-org/deployment
+              deploymentRepoPath: svc-a
+            - name: svc-b
+              path: apps/svc-b
+              deploymentRepo: test-org/deployment
+              deploymentRepoPath: svc-b
+          environments:
+            - name: dev
+              clusterName: dev-cluster
+              cloudProvider: gcp
+              account: test-account
+              location: us-east1
+              namespace: dev
+          YAML
+
+          git add -A && git commit -m "init" && git push -u origin main
+
+          # Simulate previous runs: svc-a built twice, svc-b built once
+          git tag "svc-a_v1.0.0_01" && git tag "svc-a_v1.0.0_02"
+          git tag "svc-b_v1.0.0_01"
+          git push origin --tags
+
+      - name: Run matrix generation
+        id: matrix
+        uses: ./action-src
+        with:
+          overlay: dev
+          tag: v1.0.0
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repo-path: /tmp/test-repo
+
+      - name: Verify counters increment past existing tags
+        run: |
+          echo "Matrix: ${{ steps.matrix.outputs.matrix }}"
+
+          SVC_A_TAG=$(echo '${{ steps.matrix.outputs.matrix }}' | jq -r '.include[] | select(.service_name == "svc-a") | .service_tag')
+          SVC_B_TAG=$(echo '${{ steps.matrix.outputs.matrix }}' | jq -r '.include[] | select(.service_name == "svc-b") | .service_tag')
+
+          echo "svc-a tag: $SVC_A_TAG"
+          echo "svc-b tag: $SVC_B_TAG"
+
+          FAIL=0
+          # svc-a had _01 and _02, next should be _03
+          if [[ "$SVC_A_TAG" != "svc-a_v1.0.0_03" ]]; then
+            echo "❌ svc-a: expected svc-a_v1.0.0_03, got $SVC_A_TAG"
+            ((FAIL++))
+          else
+            echo "✅ svc-a correctly incremented to _03"
+          fi
+
+          # svc-b had _01, next should be _02
+          if [[ "$SVC_B_TAG" != "svc-b_v1.0.0_02" ]]; then
+            echo "❌ svc-b: expected svc-b_v1.0.0_02, got $SVC_B_TAG"
+            ((FAIL++))
+          else
+            echo "✅ svc-b correctly incremented to _02"
+          fi
+
+          [ "$FAIL" -eq 0 ] || exit 1
+
+  test-skyhook-env-filter:
+    runs-on: ubuntu-latest
+    name: Test Skyhook with environment filter
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create Skyhook config
+        run: |
+          mkdir -p .skyhook
+          cat > .skyhook/skyhook.yaml << 'EOF'
+          services:
+            - name: service1
+              path: apps/service1
+              deploymentRepo: test-org/deployment
+              deploymentRepoPath: service1
+
+          environments:
+            - name: dev
+              clusterName: dev-cluster
+              cloudProvider: gcp
+              account: test-account
+              location: us-east1
+              namespace: dev
+            - name: staging
+              clusterName: staging-cluster
+              cloudProvider: gcp
+              account: test-account
+              location: us-east1
+              namespace: staging
+            - name: prod
+              clusterName: prod-cluster
+              cloudProvider: gcp
+              account: test-account
+              location: us-east1
+              namespace: prod
+          EOF
+
+          mkdir -p apps/service1
+
+      - name: Test with dev filter
+        id: matrix
+        uses: ./
+        with:
+          overlay: dev
+          tag: v2.0.0
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify filtered matrix
+        run: |
+          echo "Matrix: ${{ steps.matrix.outputs.matrix }}"
+
+          # Should only have 1 entry (1 service x 1 environment)
+          ENTRY_COUNT=$(echo '${{ steps.matrix.outputs.matrix }}' | jq '.include | length')
+          if [[ $ENTRY_COUNT -ne 1 ]]; then
+            echo "Expected 1 entry with dev filter, got $ENTRY_COUNT"
+            exit 1
+          fi
+
+          # Verify it's dev environment
+          OVERLAY=$(echo '${{ steps.matrix.outputs.matrix }}' | jq -r '.include[0].overlay')
+          if [[ "$OVERLAY" != "dev" ]]; then
+            echo "Expected overlay 'dev', got $OVERLAY"
+            exit 1
+          fi
+
+          echo "✅ Skyhook environment filter working correctly"

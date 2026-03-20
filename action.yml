@@ -1,0 +1,33 @@
+name: 'Generate Service Matrix'
+description: 'Generates a service × environment matrix from .skyhook/skyhook.yaml (with optional remote deployment repo discovery) or .koala-monorepo.json/.koala.toml configuration'
+author: 'Skyhook'
+ 
+branding:
+  icon: 'grid'
+  color: 'purple'
+
+inputs:
+  overlay:
+    description: 'The overlay/environment to use for kustomize (e.g., dev, staging, production). If not provided, all environments will be included.'
+    required: false
+  branch:
+    description: 'The branch to use for deployment. If not provided, uses the remote default branch (HEAD).'
+    required: false
+  tag:
+    description: 'The image tag to deploy'
+    required: true
+  github-token:
+    description: 'GitHub token for API access'
+    required: true
+  repo-path:
+    description: 'The path to the repo'
+    required: false
+    default: '.'
+
+outputs:
+  matrix:
+    description: 'JSON string of the deployment matrix for service deployments'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
