@@ -20,8 +20,12 @@ async function cloneDeploymentRepo(repoFullName, branch, githubTokens, cloneCach
   const branchLabel = branch || 'HEAD';
 
   if (cloneCache.has(cacheKey)) {
+    const cached = cloneCache.get(cacheKey);
+    if (cached === null) {
+      throw new Error(`Clone of ${repoFullName}@${branchLabel} already failed (skipping retry)`);
+    }
     core.info(`Using cached clone for ${cacheKey}`);
-    return cloneCache.get(cacheKey);
+    return cached;
   }
 
   const sanitized = repoFullName.replace(/[^a-zA-Z0-9_-]/g, '-');
@@ -38,7 +42,9 @@ async function cloneDeploymentRepo(repoFullName, branch, githubTokens, cloneCach
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `skyhook-${sanitized}-`));
     const repoUrl = `https://x-access-token:${token}@github.com/${repoFullName}.git`;
 
-    core.info(`Cloning ${repoFullName}@${branchLabel} (token ${i + 1}/${githubTokens.length})`);
+    const tokenPrefix = token.substring(0, 8);
+    core.info(`Cloning ${repoFullName}@${branchLabel} (token ${i + 1}/${githubTokens.length}, prefix: ${tokenPrefix}..., length: ${token.length})`);
+    core.info(`Clone args: git ${baseArgs.join(' ')} https://x-access-token:***@github.com/${repoFullName}.git ${tmpDir}`);
 
     let stderr = '';
     try {
@@ -53,16 +59,23 @@ async function cloneDeploymentRepo(repoFullName, branch, githubTokens, cloneCach
       core.info(`Cloned ${repoFullName}@${branchLabel} successfully`);
       return tmpDir;
     } catch (err) {
+      // Log the actual git error for debugging
+      core.warning(`Clone failed for ${repoFullName} with token ${i + 1}: ${err.message}`);
+      if (stderr.trim()) {
+        core.warning(`git stderr: ${stderr.trim()}`);
+      }
+
       // Clean up failed clone attempt
       fs.rmSync(tmpDir, { recursive: true, force: true });
-      lastError = err;
+      lastError = new Error(`${err.message}${stderr.trim() ? ' — git stderr: ' + stderr.trim() : ''}`);
 
       if (i < githubTokens.length - 1) {
-        core.info(`Token ${i + 1} failed for ${repoFullName}, trying next token`);
+        core.info(`Trying next token...`);
       }
     }
   }
 
+  cloneCache.set(cacheKey, null);
   throw new Error(`Failed to clone ${repoFullName}@${branchLabel}: ${lastError.message}`);
 }
 

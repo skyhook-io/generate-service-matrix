@@ -30228,8 +30228,12 @@ async function cloneDeploymentRepo(repoFullName, branch, githubTokens, cloneCach
   const branchLabel = branch || 'HEAD';
 
   if (cloneCache.has(cacheKey)) {
+    const cached = cloneCache.get(cacheKey);
+    if (cached === null) {
+      throw new Error(`Clone of ${repoFullName}@${branchLabel} already failed (skipping retry)`);
+    }
     core.info(`Using cached clone for ${cacheKey}`);
-    return cloneCache.get(cacheKey);
+    return cached;
   }
 
   const sanitized = repoFullName.replace(/[^a-zA-Z0-9_-]/g, '-');
@@ -30246,7 +30250,9 @@ async function cloneDeploymentRepo(repoFullName, branch, githubTokens, cloneCach
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `skyhook-${sanitized}-`));
     const repoUrl = `https://x-access-token:${token}@github.com/${repoFullName}.git`;
 
-    core.info(`Cloning ${repoFullName}@${branchLabel} (token ${i + 1}/${githubTokens.length})`);
+    const tokenPrefix = token.substring(0, 8);
+    core.info(`Cloning ${repoFullName}@${branchLabel} (token ${i + 1}/${githubTokens.length}, prefix: ${tokenPrefix}..., length: ${token.length})`);
+    core.info(`Clone args: git ${baseArgs.join(' ')} https://x-access-token:***@github.com/${repoFullName}.git ${tmpDir}`);
 
     let stderr = '';
     try {
@@ -30261,16 +30267,23 @@ async function cloneDeploymentRepo(repoFullName, branch, githubTokens, cloneCach
       core.info(`Cloned ${repoFullName}@${branchLabel} successfully`);
       return tmpDir;
     } catch (err) {
+      // Log the actual git error for debugging
+      core.warning(`Clone failed for ${repoFullName} with token ${i + 1}: ${err.message}`);
+      if (stderr.trim()) {
+        core.warning(`git stderr: ${stderr.trim()}`);
+      }
+
       // Clean up failed clone attempt
       fs.rmSync(tmpDir, { recursive: true, force: true });
-      lastError = err;
+      lastError = new Error(`${err.message}${stderr.trim() ? ' — git stderr: ' + stderr.trim() : ''}`);
 
       if (i < githubTokens.length - 1) {
-        core.info(`Token ${i + 1} failed for ${repoFullName}, trying next token`);
+        core.info(`Trying next token...`);
       }
     }
   }
 
+  cloneCache.set(cacheKey, null);
   throw new Error(`Failed to clone ${repoFullName}@${branchLabel}: ${lastError.message}`);
 }
 
@@ -32492,9 +32505,15 @@ async function run() {
     const branch = core.getInput('branch') || '';
     const tag = core.getInput('tag');
     const repoPath = core.getInput('repo-path') || '.';
+    const onDiscoveryFailure = core.getInput('on-discovery-failure') || 'skip';
 
     // Collect all available tokens (deduplicated, ordered by priority)
-    const githubTokens = resolveTokens(core.getInput('github-token'), process.env.GITHUB_TOKEN);
+    const inputToken = core.getInput('github-token');
+    const envToken = process.env.GITHUB_TOKEN;
+    const githubTokens = resolveTokens(inputToken, envToken);
+
+    core.info(`Token sources: github-token input=${inputToken ? `yes (prefix: ${inputToken.substring(0, 8)}..., length: ${inputToken.length})` : 'no'}, GITHUB_TOKEN env=${envToken ? `yes (prefix: ${envToken.substring(0, 8)}..., length: ${envToken.length})` : 'no'}`);
+    core.info(`Resolved ${githubTokens.length} unique token(s)`);
 
     // Validate inputs
     if (!fs.existsSync(repoPath)) {
@@ -32530,12 +32549,28 @@ async function run() {
       koalaMatrix = await processKoalaConfig(repoPath, branch, tag, githubToken, overlay);
     }
 
+    // Log git credential config for debugging — actions/checkout may set a credential helper
+    // that could intercept embedded-token URLs used for deployment repo cloning
+    try {
+      let credentialConfig = '';
+      await exec.exec('git', ['config', '--global', '--list'], {
+        silent: true,
+        listeners: { stdout: (data) => { credentialConfig += data.toString(); } }
+      });
+      const credentialLines = credentialConfig.split('\n').filter(l => l.includes('credential') || l.includes('http.'));
+      if (credentialLines.length > 0) {
+        core.info(`Git credential/http config:\n${credentialLines.join('\n')}`);
+      }
+    } catch (_) {
+      // ignore — just debug info
+    }
+
     // Process Skyhook config if present
     // Get per-service counters from Koala output to continue from
     const serviceCounters = koalaMatrix ? getServiceCounters(koalaMatrix) : new Map();
     if (configFormats.hasSkyhook) {
       core.info('📋 Processing Skyhook configuration (.skyhook/skyhook.yaml)');
-      skyhookMatrix = await processSkyhookConfig(configFormats.skyhookPath, tag, overlay, repoPath, serviceCounters, branch, githubTokens, skyhookCloneCache);
+      skyhookMatrix = await processSkyhookConfig(configFormats.skyhookPath, tag, overlay, repoPath, serviceCounters, branch, githubTokens, skyhookCloneCache, onDiscoveryFailure);
     }
 
     // Determine final matrix
@@ -32553,10 +32588,19 @@ async function run() {
       throw new Error('Generated matrix is empty - no service/environment combinations found');
     }
 
+    // Output full matrix (backward compatible with create-deployment-matrix)
+    const fullMatrix = finalMatrix.toObject();
+    core.setOutput('matrix', JSON.stringify(fullMatrix));
+    core.info(`✅ Generated matrix with ${finalMatrix.count} entries:`);
+    core.info(JSON.stringify(fullMatrix, null, 2));
+
     // Build build_matrix: one entry per service with images from kustomization.yaml
+    // Only include services that are in the final matrix (excludes failed discoveries)
     const buildMatrixInclude = [];
     const allServices = configFormats.hasSkyhook ? parseSkyhookConfig(configFormats.skyhookPath).services : [];
+    const matrixServiceNames = new Set(finalMatrix.include.map(e => e.service_name));
     for (const service of allServices) {
+      if (!matrixServiceNames.has(service.name)) continue;
       let images = '';
       if (service.deploymentRepo) {
         const cacheKey = `${service.deploymentRepo}:${branch || 'HEAD'}`;
@@ -32581,12 +32625,6 @@ async function run() {
     core.setOutput('build_matrix', JSON.stringify(buildMatrix));
     core.info(`✅ Generated build matrix with ${buildMatrixInclude.length} entries:`);
     core.info(JSON.stringify(buildMatrix, null, 2));
-
-    // Output full matrix (matching create-deployment-matrix format for backward compatibility)
-    const fullMatrix = finalMatrix.toObject();
-    core.setOutput('matrix', JSON.stringify(fullMatrix));
-    core.info(`✅ Generated matrix with ${finalMatrix.count} entries:`);
-    core.info(JSON.stringify(fullMatrix, null, 2));
 
     // Build deploy_matrix: only auto_deploy entries
     const deployMatrixInclude = finalMatrix.include.filter(e => e.auto_deploy === 'true');
@@ -32701,8 +32739,9 @@ async function processKoalaConfig(repoPath, branch, tag, githubToken, overlay) {
  * @param {string} branch - Branch for deployment repo cloning
  * @param {string[]} githubTokens - GitHub tokens to try for deployment repo access (in priority order)
  * @param {Map<string, string>} cloneCache - Shared clone cache (populated during resolution, reused for image extraction)
+ * @param {string} onDiscoveryFailure - Strategy for clone failures: 'fail' or 'skip'
  */
-async function processSkyhookConfig(skyhookPath, tag, overlay, repoPath, serviceCounters, branch, githubTokens, cloneCache) {
+async function processSkyhookConfig(skyhookPath, tag, overlay, repoPath, serviceCounters, branch, githubTokens, cloneCache, onDiscoveryFailure) {
   const config = parseSkyhookConfig(skyhookPath);
 
   core.info(`Found ${config.services.length} services and ${config.environments.length} environments in Skyhook config`);
@@ -32726,6 +32765,7 @@ async function processSkyhookConfig(skyhookPath, tag, overlay, repoPath, service
   // Resolve per-service environments from deployment repos
   const perServiceEnvs = new Map();
   const envConfigCache = new Map();
+  const failedServices = new Set();
 
   for (const service of config.services) {
     if (service.deploymentRepo) {
@@ -32736,12 +32776,23 @@ async function processSkyhookConfig(skyhookPath, tag, overlay, repoPath, service
         );
         perServiceEnvs.set(service.name, envs);
       } catch (err) {
-        core.warning(`Failed to resolve environments from deployment repo for ${service.name}: ${err.message}. Falling back to local skyhook.yaml environments.`);
+        if (onDiscoveryFailure === 'fail') {
+          throw err;
+        }
+        core.warning(`Failed to discover metadata for service ${service.name}: ${err.message}. Excluding from output.`);
+        failedServices.add(service.name);
       }
     }
   }
 
-  const matrix = buildMatrixFromSkyhook(config.services, config.environments, {
+  if (failedServices.size > 0) {
+    core.warning(`Excluded ${failedServices.size} service(s) due to discovery failures: ${[...failedServices].join(', ')}`);
+  }
+
+  // Filter out services that failed discovery
+  const eligibleServices = config.services.filter(s => !failedServices.has(s.name));
+
+  const matrix = buildMatrixFromSkyhook(eligibleServices, config.environments, {
     tag,
     serviceRepo,
     envFilter: overlay,
