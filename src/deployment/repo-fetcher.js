@@ -126,13 +126,8 @@ function readEnvironmentConfig(clonedRepoPath, repoFullName, branch, envName, en
   const parsed = yaml.load(content);
 
   const env = new SkyhookEnvironment({
-    name: envName,
-    clusterName: parsed.clusterName,
-    cloudProvider: parsed.cloudProvider,
-    account: parsed.account,
-    location: parsed.location,
-    namespace: parsed.namespace,
-    autoDeploy: parsed.autoDeploy
+    ...parsed,
+    name: envName
   });
 
   envConfigCache.set(cacheKey, env);

@@ -473,8 +473,8 @@ describe('resolveServiceEnvironments', () => {
   test('resolves environments from deployment repo overlays and env configs', async () => {
     // Pre-populate the fixture directory to simulate a cloned repo
     setupDeploymentRepoFixture(tmpDir, 'my-svc', ['dev', 'prod'], {
-      dev: { clusterName: 'dev-cluster', cloudProvider: 'gcp', account: 'dev-acct', location: 'us-east1', namespace: 'dev' },
-      prod: { clusterName: 'prod-cluster', cloudProvider: 'gcp', account: 'prod-acct', location: 'us-east1', namespace: 'prod' }
+      dev: { cluster_name: 'dev-cluster', cloud_provider: 'gcp', account: 'dev-acct', location: 'us-east1', namespace: 'dev' },
+      prod: { cluster_name: 'prod-cluster', cloud_provider: 'gcp', account: 'prod-acct', location: 'us-east1', namespace: 'prod' }
     });
 
     // Mock exec to return our fixture dir instead of actually cloning
@@ -502,7 +502,7 @@ describe('resolveServiceEnvironments', () => {
 
   test('falls back to service.name when deploymentRepoPath is not set', async () => {
     setupDeploymentRepoFixture(tmpDir, 'api-service', ['staging'], {
-      staging: { clusterName: 'stg-cluster', cloudProvider: 'aws', location: 'us-west-2', namespace: 'staging' }
+      staging: { cluster_name: 'stg-cluster', cloud_provider: 'aws', location: 'us-west-2', namespace: 'staging' }
     });
 
     const cloneCache = new Map();
@@ -532,12 +532,12 @@ describe('resolveServiceEnvironments', () => {
   test('two services sharing the same deployment repo reuse one clone', async () => {
     // Set up both services in the same fixture dir
     setupDeploymentRepoFixture(tmpDir, 'svc-a', ['dev'], {
-      dev: { clusterName: 'cluster-a', cloudProvider: 'gcp', namespace: 'dev' }
+      dev: { cluster_name: 'cluster-a', cloud_provider: 'gcp', namespace: 'dev' }
     });
     setupDeploymentRepoFixture(tmpDir, 'svc-b', ['dev', 'prod'], {});
     // dev env already created above, add prod
     const envDir = path.join(tmpDir, 'skyhook', 'environments');
-    fs.writeFileSync(path.join(envDir, 'prod.yaml'), yaml.dump({ clusterName: 'cluster-b', namespace: 'prod' }));
+    fs.writeFileSync(path.join(envDir, 'prod.yaml'), yaml.dump({ cluster_name: 'cluster-b', namespace: 'prod' }));
 
     const cloneCache = new Map();
     cloneCache.set('org/deploy:main', tmpDir);
@@ -594,8 +594,8 @@ describe('repo-fetcher', () => {
       const envDir = path.join(tmpDir, 'skyhook', 'environments');
       fs.mkdirSync(envDir, { recursive: true });
       fs.writeFileSync(path.join(envDir, 'dev.yaml'), [
-        'clusterName: my-cluster',
-        'cloudProvider: gcp',
+        'cluster_name: my-cluster',
+        'cloud_provider: gcp',
         'account: my-project',
         'location: us-central1',
         'namespace: dev-ns'
@@ -615,7 +615,7 @@ describe('repo-fetcher', () => {
     test('caches parsed environment configs', () => {
       const envDir = path.join(tmpDir, 'skyhook', 'environments');
       fs.mkdirSync(envDir, { recursive: true });
-      fs.writeFileSync(path.join(envDir, 'dev.yaml'), 'clusterName: cached-cluster');
+      fs.writeFileSync(path.join(envDir, 'dev.yaml'), 'cluster_name: cached-cluster');
 
       const cache = new Map();
       const env1 = readEnvironmentConfig(tmpDir, 'org/repo', 'main', 'dev', cache);
@@ -628,7 +628,7 @@ describe('repo-fetcher', () => {
     test('different repos with same env name get separate cache entries', () => {
       const envDir = path.join(tmpDir, 'skyhook', 'environments');
       fs.mkdirSync(envDir, { recursive: true });
-      fs.writeFileSync(path.join(envDir, 'dev.yaml'), 'clusterName: cluster-a');
+      fs.writeFileSync(path.join(envDir, 'dev.yaml'), 'cluster_name: cluster-a');
 
       const cache = new Map();
       readEnvironmentConfig(tmpDir, 'org/repo-a', 'main', 'dev', cache);
@@ -652,8 +652,8 @@ describe('repo-fetcher', () => {
       const envDir = path.join(tmpDir, 'skyhook', 'environments');
       fs.mkdirSync(envDir, { recursive: true });
       fs.writeFileSync(path.join(envDir, 'prod.yaml'), [
-        'clusterName: prod-cluster',
-        'autoDeploy: true'
+        'cluster_name: prod-cluster',
+        'auto_deploy: true'
       ].join('\n'));
 
       const cache = new Map();
@@ -664,7 +664,7 @@ describe('repo-fetcher', () => {
     test('autoDeploy defaults to false when not in remote yaml', () => {
       const envDir = path.join(tmpDir, 'skyhook', 'environments');
       fs.mkdirSync(envDir, { recursive: true });
-      fs.writeFileSync(path.join(envDir, 'staging.yaml'), 'clusterName: stg-cluster');
+      fs.writeFileSync(path.join(envDir, 'staging.yaml'), 'cluster_name: stg-cluster');
 
       const cache = new Map();
       const env = readEnvironmentConfig(tmpDir, 'org/repo', 'main', 'staging', cache);

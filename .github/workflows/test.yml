@@ -46,19 +46,19 @@ jobs:
 
           environments:
             - name: dev
-              clusterName: dev-cluster
-              cloudProvider: gcp
+              cluster_name: dev-cluster
+              cloud_provider: gcp
               account: test-account
               location: us-east1-b
               namespace: dev
-              autoDeploy: true
+              auto_deploy: true
             - name: prod
-              clusterName: prod-cluster
-              cloudProvider: gcp
+              cluster_name: prod-cluster
+              cloud_provider: gcp
               account: test-account
               location: us-east1-b
               namespace: prod
-              autoDeploy: true
+              auto_deploy: true
           EOF
 
           mkdir -p apps/vcs apps/api
@@ -150,12 +150,12 @@ jobs:
               path: apps/svc-b
           environments:
             - name: dev
-              clusterName: dev-cluster
-              cloudProvider: gcp
+              cluster_name: dev-cluster
+              cloud_provider: gcp
               account: test-account
               location: us-east1
               namespace: dev
-              autoDeploy: true
+              auto_deploy: true
           YAML
 
           git add -A && git commit -m "init" && git push -u origin main
@@ -220,21 +220,21 @@ jobs:
 
           environments:
             - name: dev
-              clusterName: dev-cluster
-              cloudProvider: gcp
+              cluster_name: dev-cluster
+              cloud_provider: gcp
               account: test-account
               location: us-east1
               namespace: dev
-              autoDeploy: true
+              auto_deploy: true
             - name: staging
-              clusterName: staging-cluster
-              cloudProvider: gcp
+              cluster_name: staging-cluster
+              cloud_provider: gcp
               account: test-account
               location: us-east1
               namespace: staging
             - name: prod
-              clusterName: prod-cluster
-              cloudProvider: gcp
+              cluster_name: prod-cluster
+              cloud_provider: gcp
               account: test-account
               location: us-east1
               namespace: prod
