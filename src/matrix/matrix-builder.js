@@ -85,7 +85,8 @@ function createDeploymentEntry(service, env, tag, serviceRepo, serviceTag) {
   core.info(`   cloud_provider: "${env.cloudProvider || ''}" (from skyhook.yaml environments[].cloudProvider)`);
   core.info(`   namespace: "${env.namespace || ''}" (from skyhook.yaml environments[].namespace)`);
   core.info(`   account: "${env.account || ''}" (from skyhook.yaml environments[].account)`);
-  core.info(`   auto_deploy: "true" (default value)`);
+  const autoDeploy = env.autoDeploy === true ? 'true' : 'false';
+  core.info(`   auto_deploy: "${autoDeploy}" (from skyhook.yaml environments[].autoDeploy, defaults to false if not set)`);
   core.info(`   service_tag: "${serviceTag}" (computed: {service_name}_{tag}_{counter})`);
 
   return new DeploymentEntry({
@@ -100,7 +101,7 @@ function createDeploymentEntry(service, env, tag, serviceRepo, serviceTag) {
     cloud_provider: env.cloudProvider || '',
     namespace: env.namespace,
     account: env.account,
-    auto_deploy: 'true',
+    auto_deploy: autoDeploy,
     service_tag: serviceTag
   });
 }
