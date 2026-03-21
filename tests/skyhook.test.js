@@ -136,8 +136,8 @@ describe('buildMatrixFromSkyhook', () => {
   ];
 
   const environments = [
-    { name: 'dev', clusterName: 'nonprod-cluster', cloudProvider: 'gcp', location: 'us-east1-b', namespace: 'dev', account: 'koalabackend' },
-    { name: 'prod', clusterName: 'prod-cluster', cloudProvider: 'gcp', location: 'us-east1-b', namespace: 'prod', account: 'koalabackend' }
+    { name: 'dev', clusterName: 'nonprod-cluster', cloudProvider: 'gcp', location: 'us-east1-b', namespace: 'dev', account: 'koalabackend', autoDeploy: true },
+    { name: 'prod', clusterName: 'prod-cluster', cloudProvider: 'gcp', location: 'us-east1-b', namespace: 'prod', account: 'koalabackend', autoDeploy: true }
   ];
 
   test('creates matrix with service x environment combinations', () => {
@@ -216,7 +216,7 @@ describe('buildMatrixFromSkyhook', () => {
     expect(entry.auto_deploy).toBe('true');
   });
 
-  test('auto_deploy is always true (matching create-deployment-matrix)', () => {
+  test('auto_deploy is set from environment autoDeploy field', () => {
     const envsWithAutoDeploy = [
       { name: 'dev', clusterName: 'c1', autoDeploy: true },
       { name: 'prod', clusterName: 'c2', autoDeploy: false }
@@ -231,7 +231,22 @@ describe('buildMatrixFromSkyhook', () => {
     const devEntry = matrix.include.find(e => e.overlay === 'dev');
     const prodEntry = matrix.include.find(e => e.overlay === 'prod');
     expect(devEntry.auto_deploy).toBe('true');
-    expect(prodEntry.auto_deploy).toBe('true');
+    expect(prodEntry.auto_deploy).toBe('false');
+  });
+
+  test('auto_deploy defaults to false when not specified', () => {
+    const envsWithoutAutoDeploy = [
+      { name: 'dev', clusterName: 'c1' }
+    ];
+
+    const matrix = buildMatrixFromSkyhook(
+      [{ name: 'svc', path: 'apps/svc' }],
+      envsWithoutAutoDeploy,
+      { tag: 'v1.0.0', serviceRepo: 'org/repo' }
+    );
+
+    const devEntry = matrix.include.find(e => e.overlay === 'dev');
+    expect(devEntry.auto_deploy).toBe('false');
   });
 });
 
@@ -864,5 +879,23 @@ describe('DeploymentMatrix.merge', () => {
     // The duplicate should be from matrix2 (overwrites)
     const vcsDev = matrix1.include.find(e => e.service_name === 'vcs' && e.overlay === 'dev');
     expect(vcsDev.service_tag).toBe('vcs_v2_01');
+  });
+
+  test('DeploymentEntry.fromObject preserves auto_deploy from Koala matrix JSON', () => {
+    const koalaJsonEntry = {
+      service_name: 'svc1',
+      service_dir: 'apps/svc1',
+      service_repo: 'org/repo',
+      overlay: 'prod',
+      auto_deploy: 'false',  // Koala sets this from .koala.toml
+      cluster: 'prod-cluster',
+      cloud_provider: 'gcp',
+      service_tag: 'svc1_v1_01'
+    };
+
+    const entry = DeploymentEntry.fromObject(koalaJsonEntry);
+    expect(entry.auto_deploy).toBe('false');
+    expect(entry.service_name).toBe('svc1');
+    expect(entry.overlay).toBe('prod');
   });
 });
