@@ -30468,6 +30468,85 @@ module.exports = {
 
 /***/ }),
 
+/***/ 3959:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+const { readKustomizeImages } = __nccwpck_require__(9315);
+
+/**
+ * Build the build_matrix with images from kustomization.yaml files.
+ * Extracts one entry per service with Docker images.
+ *
+ * @param {Array} services - Services from skyhook config
+ * @param {Set} matrixServiceNames - Set of service names in the deployment matrix (filters out failed discoveries)
+ * @param {Map} skyhookCloneCache - Cache of cloned deployment repos (repo:branch -> path)
+ * @param {Object} options - Configuration options
+ * @param {string} options.branch - Git branch
+ * @param {string} options.repoPath - Path to the main service repo
+ * @param {boolean} options.kustomizeImageFallback - Whether to use fallback image extraction
+ * @param {Object} options.skyhookMatrix - Matrix from Skyhook config (contains serviceTags)
+ * @returns {Array} Array of build matrix entries
+ */
+function buildBuildMatrix(services, matrixServiceNames, skyhookCloneCache, options) {
+  const {
+    branch = 'HEAD',
+    repoPath,
+    kustomizeImageFallback = false,
+    skyhookMatrix
+  } = options;
+
+  const buildMatrixInclude = [];
+
+  for (const service of services) {
+    if (!matrixServiceNames.has(service.name)) continue;
+
+    let images = '';
+    let clonedPath;
+
+    if (service.deploymentRepo) {
+      // Use deployment repo if configured
+      const cacheKey = `${service.deploymentRepo}:${branch || 'HEAD'}`;
+      clonedPath = skyhookCloneCache.get(cacheKey);
+    } else {
+      // Fall back to main service repo if no deployment repo
+      clonedPath = repoPath;
+    }
+
+    if (clonedPath) {
+      const imageList = readKustomizeImages(
+        clonedPath,
+        service.deploymentRepoPath || service.path,
+        service.name,
+        { fallback: kustomizeImageFallback }
+      );
+      images = imageList.join('\n');
+    }
+
+    const serviceTag = skyhookMatrix && skyhookMatrix.serviceTags
+      ? skyhookMatrix.serviceTags.get(service.name)
+      : undefined;
+
+    const entry = {
+      service_name: service.name,
+      service_dir: service.path,
+      images
+    };
+
+    if (serviceTag) {
+      entry.service_tag = serviceTag;
+    }
+
+    buildMatrixInclude.push(entry);
+  }
+
+  return buildMatrixInclude;
+}
+
+module.exports = { buildBuildMatrix };
+
+
+/***/ }),
+
 /***/ 6104:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
@@ -32526,7 +32605,8 @@ const { DeploymentMatrix } = __nccwpck_require__(9439);
 const { detectConfigFormats } = __nccwpck_require__(7771);
 const { parseSkyhookConfig } = __nccwpck_require__(7396);
 const { buildMatrixFromSkyhook, mergeMatrices } = __nccwpck_require__(6104);
-const { resolveServiceEnvironments, readKustomizeImages } = __nccwpck_require__(9315);
+const { buildBuildMatrix } = __nccwpck_require__(3959);
+const { resolveServiceEnvironments } = __nccwpck_require__(9315);
 
 async function run() {
   try {
@@ -32628,36 +32708,14 @@ async function run() {
 
     // Build build_matrix: one entry per service with images from kustomization.yaml
     // Only include services that are in the final matrix (excludes failed discoveries)
-    const buildMatrixInclude = [];
     const allServices = configFormats.hasSkyhook ? parseSkyhookConfig(configFormats.skyhookPath).services : [];
     const matrixServiceNames = new Set(finalMatrix.include.map(e => e.service_name));
-    for (const service of allServices) {
-      if (!matrixServiceNames.has(service.name)) continue;
-      let images = '';
-      if (service.deploymentRepo) {
-        const cacheKey = `${service.deploymentRepo}:${branch || 'HEAD'}`;
-        const clonedPath = skyhookCloneCache.get(cacheKey);
-        if (clonedPath) {
-          const imageList = readKustomizeImages(
-            clonedPath,
-            service.deploymentRepoPath || service.name,
-            service.name,
-            { fallback: kustomizeImageFallback }
-          );
-          images = imageList.join('\n');
-        }
-      }
-      const serviceTag = skyhookMatrix && skyhookMatrix.serviceTags ? skyhookMatrix.serviceTags.get(service.name) : undefined;
-      const entry = {
-        service_name: service.name,
-        service_dir: service.path,
-        images
-      };
-      if (serviceTag) {
-        entry.service_tag = serviceTag;
-      }
-      buildMatrixInclude.push(entry);
-    }
+    const buildMatrixInclude = buildBuildMatrix(allServices, matrixServiceNames, skyhookCloneCache, {
+      branch,
+      repoPath,
+      kustomizeImageFallback,
+      skyhookMatrix
+    });
 
     const buildMatrix = { include: buildMatrixInclude };
     core.setOutput('build_matrix', JSON.stringify(buildMatrix));
