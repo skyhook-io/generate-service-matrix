@@ -5,7 +5,8 @@ const { DeploymentMatrix } = require('./DeploymentMatrix');
 const { detectConfigFormats } = require('./config/config-detector');
 const { parseSkyhookConfig } = require('./config/skyhook-parser');
 const { buildMatrixFromSkyhook, mergeMatrices } = require('./matrix/matrix-builder');
-const { resolveServiceEnvironments, readKustomizeImages } = require('./deployment/repo-fetcher');
+const { buildBuildMatrix } = require('./matrix/build-matrix-builder');
+const { resolveServiceEnvironments } = require('./deployment/repo-fetcher');
 
 async function run() {
   try {
@@ -107,36 +108,14 @@ async function run() {
 
     // Build build_matrix: one entry per service with images from kustomization.yaml
     // Only include services that are in the final matrix (excludes failed discoveries)
-    const buildMatrixInclude = [];
     const allServices = configFormats.hasSkyhook ? parseSkyhookConfig(configFormats.skyhookPath).services : [];
     const matrixServiceNames = new Set(finalMatrix.include.map(e => e.service_name));
-    for (const service of allServices) {
-      if (!matrixServiceNames.has(service.name)) continue;
-      let images = '';
-      if (service.deploymentRepo) {
-        const cacheKey = `${service.deploymentRepo}:${branch || 'HEAD'}`;
-        const clonedPath = skyhookCloneCache.get(cacheKey);
-        if (clonedPath) {
-          const imageList = readKustomizeImages(
-            clonedPath,
-            service.deploymentRepoPath || service.name,
-            service.name,
-            { fallback: kustomizeImageFallback }
-          );
-          images = imageList.join('\n');
-        }
-      }
-      const serviceTag = skyhookMatrix && skyhookMatrix.serviceTags ? skyhookMatrix.serviceTags.get(service.name) : undefined;
-      const entry = {
-        service_name: service.name,
-        service_dir: service.path,
-        images
-      };
-      if (serviceTag) {
-        entry.service_tag = serviceTag;
-      }
-      buildMatrixInclude.push(entry);
-    }
+    const buildMatrixInclude = buildBuildMatrix(allServices, matrixServiceNames, skyhookCloneCache, {
+      branch,
+      repoPath,
+      kustomizeImageFallback,
+      skyhookMatrix
+    });
 
     const buildMatrix = { include: buildMatrixInclude };
     core.setOutput('build_matrix', JSON.stringify(buildMatrix));
