@@ -1,7 +1,7 @@
 const { SkyhookConfig, SkyhookService, SkyhookEnvironment } = require('../src/config/SkyhookConfig');
-const { parseSkyhookConfig, validateSkyhookConfig } = require('../src/config/skyhook-parser');
-const { detectConfigFormats } = require('../src/config/config-detector');
+const { validateSkyhookConfig } = require('../src/config/skyhook-parser');
 const { buildMatrixFromSkyhook } = require('../src/matrix/matrix-builder');
+const { buildBuildMatrix } = require('../src/matrix/build-matrix-builder');
 const { DeploymentMatrix, DeploymentEntry } = require('../src/DeploymentMatrix');
 const { cloneDeploymentRepo, listServiceOverlays, readEnvironmentConfig, resolveServiceEnvironments, readKustomizeImages } = require('../src/deployment/repo-fetcher');
 const exec = require('@actions/exec');
@@ -897,5 +897,205 @@ describe('DeploymentMatrix.merge', () => {
     expect(entry.auto_deploy).toBe('false');
     expect(entry.service_name).toBe('svc1');
     expect(entry.overlay).toBe('prod');
+  });
+});
+
+describe('buildBuildMatrix', () => {
+  let serviceRepoDir;
+  let deployRepoDir;
+
+  beforeEach(() => {
+    serviceRepoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'service-repo-test-'));
+    deployRepoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'deploy-repo-test-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(serviceRepoDir, { recursive: true, force: true });
+    fs.rmSync(deployRepoDir, { recursive: true, force: true });
+  });
+
+  test('extracts images from deploymentRepo when deploymentRepo is set', () => {
+    // Setup deployment repo with kustomization files
+    const deployOverlayDir = path.join(deployRepoDir, 'my-service', 'deploy', 'overlays', 'dev');
+    fs.mkdirSync(deployOverlayDir, { recursive: true });
+    fs.writeFileSync(path.join(deployOverlayDir, 'kustomization.yaml'), yaml.dump({
+      images: [
+        { name: 'my-service', newName: 'gcr.io/project/my-service:latest' }
+      ]
+    }));
+
+    const service = {
+      name: 'my-service',
+      path: 'apps/my-service',
+      deploymentRepo: 'org/deploy-repo',
+      deploymentRepoPath: 'my-service'
+    };
+
+    const cloneCache = new Map();
+    cloneCache.set('org/deploy-repo:main', deployRepoDir);
+
+    const result = buildBuildMatrix([service], new Set(['my-service']), cloneCache, {
+      branch: 'main',
+      repoPath: serviceRepoDir,
+      kustomizeImageFallback: false
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].images).toBe('gcr.io/project/my-service:latest');
+    expect(result[0].service_name).toBe('my-service');
+    expect(result[0].service_dir).toBe('apps/my-service');
+  });
+
+  test('extracts images from service repo when deploymentRepo is empty', () => {
+    // Setup service repo with kustomization files
+    const serviceOverlayDir = path.join(serviceRepoDir, 'apps', 'my-service', 'deploy', 'overlays', 'dev');
+    fs.mkdirSync(serviceOverlayDir, { recursive: true });
+    fs.writeFileSync(path.join(serviceOverlayDir, 'kustomization.yaml'), yaml.dump({
+      images: [
+        { name: 'my-service', newName: 'gcr.io/project/my-service:v1.0.0' }
+      ]
+    }));
+
+    const service = {
+      name: 'my-service',
+      path: 'apps/my-service'
+    };
+
+    const result = buildBuildMatrix([service], new Set(['my-service']), new Map(), {
+      branch: 'main',
+      repoPath: serviceRepoDir,
+      kustomizeImageFallback: false
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].images).toBe('gcr.io/project/my-service:v1.0.0');
+  });
+
+  test('uses deploymentRepoPath when set, otherwise falls back to service.path', () => {
+    // Setup service repo with custom path
+    const customPathOverlayDir = path.join(serviceRepoDir, 'custom-deploy-path', 'deploy', 'overlays', 'dev');
+    fs.mkdirSync(customPathOverlayDir, { recursive: true });
+    fs.writeFileSync(path.join(customPathOverlayDir, 'kustomization.yaml'), yaml.dump({
+      images: [
+        { name: 'my-service', newName: 'gcr.io/project/custom:latest' }
+      ]
+    }));
+
+    const service = {
+      name: 'my-service',
+      path: 'apps/my-service',
+      deploymentRepoPath: 'custom-deploy-path'
+    };
+
+    const result = buildBuildMatrix([service], new Set(['my-service']), new Map(), {
+      branch: 'main',
+      repoPath: serviceRepoDir,
+      kustomizeImageFallback: false
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].images).toBe('gcr.io/project/custom:latest');
+  });
+
+  test('handles multiple services with mixed deployment repos', () => {
+    // Setup deployment repo for service A
+    const deployOverlayDir = path.join(deployRepoDir, 'service-a', 'deploy', 'overlays', 'dev');
+    fs.mkdirSync(deployOverlayDir, { recursive: true });
+    fs.writeFileSync(path.join(deployOverlayDir, 'kustomization.yaml'), yaml.dump({
+      images: [
+        { name: 'service-a', newName: 'gcr.io/project/service-a' }
+      ]
+    }));
+
+    // Setup service repo for service B
+    const serviceOverlayDir = path.join(serviceRepoDir, 'apps', 'service-b', 'deploy', 'overlays', 'dev');
+    fs.mkdirSync(serviceOverlayDir, { recursive: true });
+    fs.writeFileSync(path.join(serviceOverlayDir, 'kustomization.yaml'), yaml.dump({
+      images: [
+        { name: 'service-b', newName: 'gcr.io/project/service-b' }
+      ]
+    }));
+
+    const services = [
+      {
+        name: 'service-a',
+        path: 'apps/service-a',
+        deploymentRepo: 'org/deploy-repo',
+        deploymentRepoPath: 'service-a'
+      },
+      {
+        name: 'service-b',
+        path: 'apps/service-b'
+      }
+    ];
+
+    const cloneCache = new Map();
+    cloneCache.set('org/deploy-repo:main', deployRepoDir);
+
+    const result = buildBuildMatrix(services, new Set(['service-a', 'service-b']), cloneCache, {
+      branch: 'main',
+      repoPath: serviceRepoDir,
+      kustomizeImageFallback: false
+    });
+
+    expect(result).toHaveLength(2);
+    const serviceA = result.find(e => e.service_name === 'service-a');
+    const serviceB = result.find(e => e.service_name === 'service-b');
+    expect(serviceA.images).toBe('gcr.io/project/service-a');
+    expect(serviceB.images).toBe('gcr.io/project/service-b');
+  });
+
+  test('returns empty images when no kustomization files found', () => {
+    const service = {
+      name: 'my-service',
+      path: 'apps/my-service'
+    };
+
+    const result = buildBuildMatrix([service], new Set(['my-service']), new Map(), {
+      branch: 'main',
+      repoPath: serviceRepoDir,
+      kustomizeImageFallback: false
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].images).toBe('');
+  });
+
+  test('includes service_tag when skyhookMatrix has serviceTags', () => {
+    const service = {
+      name: 'my-service',
+      path: 'apps/my-service'
+    };
+
+    const skyhookMatrix = {
+      serviceTags: new Map([['my-service', 'my-service_main_01']])
+    };
+
+    const result = buildBuildMatrix([service], new Set(['my-service']), new Map(), {
+      branch: 'main',
+      repoPath: serviceRepoDir,
+      kustomizeImageFallback: false,
+      skyhookMatrix
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].service_tag).toBe('my-service_main_01');
+  });
+
+  test('filters services not in matrixServiceNames', () => {
+    const services = [
+      { name: 'service-a', path: 'apps/service-a' },
+      { name: 'service-b', path: 'apps/service-b' }
+    ];
+
+    // Only include service-a in the matrix
+    const result = buildBuildMatrix(services, new Set(['service-a']), new Map(), {
+      branch: 'main',
+      repoPath: serviceRepoDir,
+      kustomizeImageFallback: false
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].service_name).toBe('service-a');
   });
 });
