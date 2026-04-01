@@ -46,5 +46,5 @@ outputs:
     description: 'JSON string of the deploy matrix (only auto_deploy entries from the full service×environment matrix)'
 
 runs:
-  using: 'node20'
+  using: 'node24'
   main: 'dist/index.js'
