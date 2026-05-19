@@ -32823,7 +32823,7 @@ async function processKoalaConfig(repoPath, branch, tag, githubToken, envFilterS
   // use the native flag (also faster - drops other envs server-side). Otherwise, fetch all
   // envs and post-filter the parsed matrix below.
   let postFilterNeeded = false;
-  if (envFilterSet) {
+  if (envFilterSet instanceof Set && envFilterSet.size > 0) {
     if (envFilterSet.size === 1) {
       const single = [...envFilterSet][0];
       core.info(`🎯 Filtering for environment: ${single}`);
