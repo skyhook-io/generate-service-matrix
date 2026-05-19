@@ -8,8 +8,16 @@ branding:
 
 inputs:
   overlay:
-    description: 'The overlay/environment to use for kustomize (e.g., dev, staging, production). If not provided, all environments will be included.'
+    description: 'Deprecated: use "environments" instead. Single overlay/environment to use for kustomize (e.g., dev, staging, production). Ignored when "environments" is set. If neither is provided, all environments will be included.'
     required: false
+  environments:
+    description: 'Comma-separated list of environment names to include (e.g., "dev,staging"). Multi-value replacement for "overlay". An environment is kept if its name matches any entry in this list. Whitespace is trimmed. Empty or unset means no filter (all environments). When set (non-empty), takes precedence over "overlay".'
+    required: false
+    default: ''
+  force-deploy:
+    description: 'When "true", every environment that passes the env filter is treated as auto_deploy=true in the deploy_matrix output, regardless of its autoDeploy setting in skyhook.yaml or .koala.toml. Default "false" preserves the per-environment autoDeploy flag.'
+    required: false
+    default: 'false'
   branch:
     description: 'The branch to use for deployment. If not provided, uses the remote default branch (HEAD).'
     required: false

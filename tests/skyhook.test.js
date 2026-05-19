@@ -185,15 +185,52 @@ describe('buildMatrixFromSkyhook', () => {
     expect(infraEntries[0].service_tag).toBe('project-infra_v1.0.0_01');
   });
 
-  test('applies environment filter', () => {
+  test('applies environment filter (single env)', () => {
     const matrix = buildMatrixFromSkyhook(services, environments, {
       tag: 'v1.0.0',
       serviceRepo: 'KoalaOps/orbit',
-      envFilter: 'dev'
+      envFilterSet: new Set(['dev'])
     });
 
     expect(matrix.count).toBe(2); // 2 services x 1 environment (dev only)
     expect(matrix.include.every(e => e.overlay === 'dev')).toBe(true);
+  });
+
+  test('applies environment filter (envFilterSet multiple envs)', () => {
+    const envs = [
+      { name: 'dev', clusterName: 'c1', autoDeploy: true },
+      { name: 'staging', clusterName: 'c2', autoDeploy: true },
+      { name: 'prod', clusterName: 'c3', autoDeploy: true }
+    ];
+    const matrix = buildMatrixFromSkyhook(services, envs, {
+      tag: 'v1.0.0',
+      serviceRepo: 'KoalaOps/orbit',
+      envFilterSet: new Set(['dev', 'prod'])
+    });
+
+    expect(matrix.count).toBe(4); // 2 services x 2 filtered envs
+    const overlays = matrix.include.map(e => e.overlay).sort();
+    expect(overlays).toEqual(['dev', 'dev', 'prod', 'prod']);
+  });
+
+  test('empty envFilterSet behaves like no filter', () => {
+    const matrix = buildMatrixFromSkyhook(services, environments, {
+      tag: 'v1.0.0',
+      serviceRepo: 'KoalaOps/orbit',
+      envFilterSet: new Set()
+    });
+
+    expect(matrix.count).toBe(4); // 2 services x 2 envs (no filter applied)
+  });
+
+  test('envFilterSet with unknown env yields empty matrix', () => {
+    const matrix = buildMatrixFromSkyhook(services, environments, {
+      tag: 'v1.0.0',
+      serviceRepo: 'KoalaOps/orbit',
+      envFilterSet: new Set(['nonexistent'])
+    });
+
+    expect(matrix.count).toBe(0);
   });
 
   test('maps all fields correctly', () => {
@@ -248,6 +285,64 @@ describe('buildMatrixFromSkyhook', () => {
     const devEntry = matrix.include.find(e => e.overlay === 'dev');
     expect(devEntry.auto_deploy).toBe('false');
   });
+
+  describe('forceDeploy option', () => {
+    const mixedEnvs = [
+      { name: 'dev', clusterName: 'c1', autoDeploy: true },
+      { name: 'staging', clusterName: 'c2', autoDeploy: false },
+      { name: 'prod', clusterName: 'c3' } // intrinsic false (undefined)
+    ];
+
+    test('forceDeploy=true overrides every entry to auto_deploy=true', () => {
+      const matrix = buildMatrixFromSkyhook(
+        [{ name: 'svc', path: 'apps/svc' }],
+        mixedEnvs,
+        { tag: 'v1.0.0', serviceRepo: 'org/repo', forceDeploy: true }
+      );
+
+      expect(matrix.count).toBe(3);
+      expect(matrix.include.every(e => e.auto_deploy === 'true')).toBe(true);
+    });
+
+    test('forceDeploy=false leaves intrinsic auto_deploy values intact', () => {
+      const matrix = buildMatrixFromSkyhook(
+        [{ name: 'svc', path: 'apps/svc' }],
+        mixedEnvs,
+        { tag: 'v1.0.0', serviceRepo: 'org/repo', forceDeploy: false }
+      );
+
+      const byName = Object.fromEntries(matrix.include.map(e => [e.overlay, e.auto_deploy]));
+      expect(byName).toEqual({ dev: 'true', staging: 'false', prod: 'false' });
+    });
+
+    test('forceDeploy default (omitted) leaves intrinsic auto_deploy values intact', () => {
+      const matrix = buildMatrixFromSkyhook(
+        [{ name: 'svc', path: 'apps/svc' }],
+        mixedEnvs,
+        { tag: 'v1.0.0', serviceRepo: 'org/repo' }
+      );
+
+      const byName = Object.fromEntries(matrix.include.map(e => [e.overlay, e.auto_deploy]));
+      expect(byName).toEqual({ dev: 'true', staging: 'false', prod: 'false' });
+    });
+
+    test('forceDeploy applies only to envs that survive envFilterSet', () => {
+      const matrix = buildMatrixFromSkyhook(
+        [{ name: 'svc', path: 'apps/svc' }],
+        mixedEnvs,
+        {
+          tag: 'v1.0.0',
+          serviceRepo: 'org/repo',
+          envFilterSet: new Set(['prod']),
+          forceDeploy: true
+        }
+      );
+
+      expect(matrix.count).toBe(1);
+      expect(matrix.include[0].overlay).toBe('prod');
+      expect(matrix.include[0].auto_deploy).toBe('true'); // forced
+    });
+  });
 });
 
 describe('buildMatrixFromSkyhook with perServiceEnvs', () => {
@@ -290,7 +385,7 @@ describe('buildMatrixFromSkyhook with perServiceEnvs', () => {
     expect(localEntries[0].cluster).toBe('global-cluster');
   });
 
-  test('applies envFilter to per-service envs', () => {
+  test('applies envFilterSet to per-service envs', () => {
     const perServiceEnvs = new Map();
     perServiceEnvs.set('svc-remote', remoteEnvs);
 
@@ -298,7 +393,7 @@ describe('buildMatrixFromSkyhook with perServiceEnvs', () => {
       tag: 'v1.0.0',
       serviceRepo: 'org/source',
       perServiceEnvs,
-      envFilter: 'staging'
+      envFilterSet: new Set(['staging'])
     });
 
     // Only svc-remote has staging, svc-local has no staging env

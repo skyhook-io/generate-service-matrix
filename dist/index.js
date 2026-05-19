@@ -30560,14 +30560,18 @@ const { DeploymentMatrix, DeploymentEntry } = __nccwpck_require__(9439);
  * @param {Object} options - Build options
  * @param {string} options.tag - Image tag to inject
  * @param {string} options.serviceRepo - Source repository (e.g., "KoalaOps/orbit")
- * @param {string} [options.envFilter] - Environment filter (optional)
+ * @param {Set<string>|null} [options.envFilterSet] - Environment filter as a set of names. null/empty = no filter.
  * @param {Map<string, number>} [options.serviceCounters] - Per-service counters from Koala
  * @param {Map<string, Array>} [options.perServiceEnvs] - Per-service environments from deployment repos
+ * @param {boolean} [options.forceDeploy] - When true, auto_deploy is set to 'true' on every surviving entry regardless of env.autoDeploy
  * @returns {DeploymentMatrix}
  */
 function buildMatrixFromSkyhook(services, environments, options = {}) {
-  const { tag, serviceRepo, envFilter, serviceCounters = new Map(), perServiceEnvs = new Map() } = options;
+  const { tag, serviceRepo, envFilterSet, serviceCounters = new Map(), perServiceEnvs = new Map(), forceDeploy = false } = options;
   const matrix = new DeploymentMatrix();
+
+  // null/empty set means no filter (include all envs).
+  const effectiveFilter = (envFilterSet instanceof Set && envFilterSet.size > 0) ? envFilterSet : null;
 
   // Clone the counters map so we can modify it
   const counters = new Map(serviceCounters);
@@ -30576,6 +30580,8 @@ function buildMatrixFromSkyhook(services, environments, options = {}) {
   core.info(`   - Tag: ${tag}`);
   core.info(`   - Service repo (from GITHUB_REPOSITORY): ${serviceRepo}`);
   core.info(`   - Existing service counters: ${JSON.stringify(Object.fromEntries(counters))}`);
+  core.info(`   - Env filter: ${effectiveFilter ? `[${[...effectiveFilter].join(', ')}]` : '(none)'}`);
+  core.info(`   - force-deploy: ${forceDeploy}`);
 
   core.info(`   - Services count: ${services.length}`);
 
@@ -30588,8 +30594,8 @@ function buildMatrixFromSkyhook(services, environments, options = {}) {
     let serviceEnvs = perServiceEnvs.has(service.name) ? perServiceEnvs.get(service.name) : environments;
 
     // Apply environment filter if provided
-    if (envFilter) {
-      serviceEnvs = serviceEnvs.filter(env => env.name === envFilter);
+    if (effectiveFilter) {
+      serviceEnvs = serviceEnvs.filter(env => effectiveFilter.has(env.name));
     }
 
     core.info(`   - ${service.name}: ${serviceEnvs.length} environments${perServiceEnvs.has(service.name) ? ' (from deployment repo)' : ' (from local config)'}`);
@@ -30604,7 +30610,7 @@ function buildMatrixFromSkyhook(services, environments, options = {}) {
 
     for (const env of serviceEnvs) {
       core.info(`\n🔧 Creating entry for ${service.name} (counter: ${nextCounter}):`);
-      const entry = createDeploymentEntry(service, env, tag, serviceRepo, serviceTag);
+      const entry = createDeploymentEntry(service, env, tag, serviceRepo, serviceTag, forceDeploy);
       matrix.addEntry(entry);
     }
   }
@@ -30621,9 +30627,10 @@ function buildMatrixFromSkyhook(services, environments, options = {}) {
  * @param {string} tag - Image tag
  * @param {string} serviceRepo - Source repository
  * @param {string} serviceTag - Pre-computed service tag (one per service)
+ * @param {boolean} [forceDeploy=false] - When true, auto_deploy is forced to 'true' regardless of env.autoDeploy
  * @returns {DeploymentEntry}
  */
-function createDeploymentEntry(service, env, tag, serviceRepo, serviceTag) {
+function createDeploymentEntry(service, env, tag, serviceRepo, serviceTag, forceDeploy = false) {
 
   // Log where each value comes from
   core.info(`   service_name: "${service.name}" (from skyhook.yaml services[].name)`);
@@ -30637,8 +30644,13 @@ function createDeploymentEntry(service, env, tag, serviceRepo, serviceTag) {
   core.info(`   cloud_provider: "${env.cloudProvider || ''}" (from skyhook.yaml environments[].cloudProvider)`);
   core.info(`   namespace: "${env.namespace || ''}" (from skyhook.yaml environments[].namespace)`);
   core.info(`   account: "${env.account || ''}" (from skyhook.yaml environments[].account)`);
-  const autoDeploy = env.autoDeploy === true ? 'true' : 'false';
-  core.info(`   auto_deploy: "${autoDeploy}" (from skyhook.yaml environments[].autoDeploy, defaults to false if not set)`);
+  const intrinsicAutoDeploy = env.autoDeploy === true ? 'true' : 'false';
+  const autoDeploy = forceDeploy ? 'true' : intrinsicAutoDeploy;
+  if (forceDeploy && intrinsicAutoDeploy !== 'true') {
+    core.info(`   auto_deploy: "${autoDeploy}" (forced by force-deploy=true; intrinsic was "${intrinsicAutoDeploy}")`);
+  } else {
+    core.info(`   auto_deploy: "${autoDeploy}" (from skyhook.yaml environments[].autoDeploy, defaults to false if not set)`);
+  }
   core.info(`   service_tag: "${serviceTag}" (computed: {service_name}_{tag}_{counter})`);
 
   return new DeploymentEntry({
@@ -32611,6 +32623,8 @@ const { resolveServiceEnvironments } = __nccwpck_require__(9315);
 async function run() {
   try {
     const overlay = core.getInput('overlay');
+    const environmentsInput = core.getInput('environments');
+    const forceDeploy = core.getInput('force-deploy') === 'true';
     const rawBranch = core.getInput('branch') || '';
     // Treat "HEAD" as empty so git clone uses the remote's default branch
     const branch = rawBranch === 'HEAD' ? '' : rawBranch;
@@ -32618,6 +32632,30 @@ async function run() {
     const repoPath = core.getInput('repo-path') || '.';
     const onDiscoveryFailure = core.getInput('on-discovery-failure') || 'skip';
     const kustomizeImageFallback = core.getInput('kustomize-image-fallback') === 'true';
+
+    // Build effective env filter: "environments" wins if non-empty, else fall back to legacy "overlay".
+    // null means no filter (include all environments).
+    const envList = environmentsInput
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+    let envFilterSet = null;
+    if (envList.length > 0) {
+      envFilterSet = new Set(envList);
+      if (overlay) {
+        core.info(`Both "environments" and "overlay" provided - using "environments". environments=[${envList.join(', ')}], overlay="${overlay}"`);
+      } else {
+        core.info(`Using environments filter: [${envList.join(', ')}]`);
+      }
+    } else if (overlay) {
+      envFilterSet = new Set([overlay]);
+      core.info(`Using overlay filter: "${overlay}"`);
+    } else {
+      core.info('No env filter set - all environments included');
+    }
+    if (forceDeploy) {
+      core.info('force-deploy=true: all matched envs will be treated as auto_deploy=true');
+    }
 
     // Collect all available tokens (deduplicated, ordered by priority)
     const inputToken = core.getInput('github-token');
@@ -32658,7 +32696,7 @@ async function run() {
     // Process Koala config if present
     if (configFormats.hasKoala) {
       core.info('📋 Processing Koala configuration (.koala-monorepo.json)');
-      koalaMatrix = await processKoalaConfig(repoPath, branch, tag, githubToken, overlay);
+      koalaMatrix = await processKoalaConfig(repoPath, branch, tag, githubToken, envFilterSet, forceDeploy);
     }
 
     // Log git credential config for debugging — actions/checkout may set a credential helper
@@ -32682,7 +32720,7 @@ async function run() {
     const serviceCounters = koalaMatrix ? getServiceCounters(koalaMatrix) : new Map();
     if (configFormats.hasSkyhook) {
       core.info('📋 Processing Skyhook configuration (.skyhook/skyhook.yaml)');
-      skyhookMatrix = await processSkyhookConfig(configFormats.skyhookPath, tag, overlay, repoPath, serviceCounters, branch, githubTokens, skyhookCloneCache, onDiscoveryFailure);
+      skyhookMatrix = await processSkyhookConfig(configFormats.skyhookPath, tag, envFilterSet, repoPath, serviceCounters, branch, githubTokens, skyhookCloneCache, onDiscoveryFailure, forceDeploy);
     }
 
     // Determine final matrix
@@ -32764,8 +32802,14 @@ function getServiceCounters(matrix) {
 
 /**
  * Process Koala configuration using workflow-utils CLI
+ * @param {string} repoPath
+ * @param {string} branch
+ * @param {string} tag
+ * @param {string} githubToken
+ * @param {Set<string>|null} envFilterSet - Effective env filter (null = all envs)
+ * @param {boolean} forceDeploy - When true, override auto_deploy to 'true' for all surviving entries
  */
-async function processKoalaConfig(repoPath, branch, tag, githubToken, overlay) {
+async function processKoalaConfig(repoPath, branch, tag, githubToken, envFilterSet, forceDeploy) {
   core.info('🔍 Reading .koala-monorepo.json from repo root to identify services');
   core.info('📋 Extracting deployment configuration from .koala.toml files for different environments');
 
@@ -32775,9 +32819,19 @@ async function processKoalaConfig(repoPath, branch, tag, githubToken, overlay) {
     cmd += ` -branch ${branch}`;
   }
 
-  if (overlay) {
-    core.info(`🎯 Filtering for environment: ${overlay}`);
-    cmd += ` -envFilter ${overlay}`;
+  // workflow-utils -envFilter takes a single value. If we have exactly one env in the filter,
+  // use the native flag (also faster - drops other envs server-side). Otherwise, fetch all
+  // envs and post-filter the parsed matrix below.
+  let postFilterNeeded = false;
+  if (envFilterSet) {
+    if (envFilterSet.size === 1) {
+      const single = [...envFilterSet][0];
+      core.info(`🎯 Filtering for environment: ${single}`);
+      cmd += ` -envFilter ${single}`;
+    } else {
+      core.info(`🎯 Filtering for environments (post-filter): [${[...envFilterSet].join(', ')}]`);
+      postFilterNeeded = true;
+    }
   } else {
     core.info('🌍 Including all environments');
   }
@@ -32822,22 +32876,40 @@ async function processKoalaConfig(repoPath, branch, tag, githubToken, overlay) {
     parsed = JSON.parse(parsed);
   }
 
-  return DeploymentMatrix.fromObject(parsed);
+  const matrix = DeploymentMatrix.fromObject(parsed);
+
+  // Post-filter by env name set when workflow-utils couldn't do it natively (multi-env).
+  if (postFilterNeeded) {
+    const before = matrix.include.length;
+    matrix.include = matrix.include.filter(e => envFilterSet.has(e.overlay));
+    core.info(`Post-filtered Koala matrix by environments: ${before} → ${matrix.include.length} entries`);
+  }
+
+  // force-deploy: override auto_deploy on every surviving entry.
+  if (forceDeploy) {
+    for (const entry of matrix.include) {
+      entry.auto_deploy = 'true';
+    }
+    core.info(`force-deploy: overrode auto_deploy='true' on ${matrix.include.length} Koala entries`);
+  }
+
+  return matrix;
 }
 
 /**
  * Process Skyhook configuration
  * @param {string} skyhookPath - Path to skyhook.yaml
  * @param {string} tag - Image tag
- * @param {string} overlay - Environment filter
+ * @param {Set<string>|null} envFilterSet - Effective env filter (null = all envs)
  * @param {string} repoPath - Path to the git repository
  * @param {Map<string, number>} serviceCounters - Per-service counters from Koala
  * @param {string} branch - Branch for deployment repo cloning
  * @param {string[]} githubTokens - GitHub tokens to try for deployment repo access (in priority order)
  * @param {Map<string, string>} cloneCache - Shared clone cache (populated during resolution, reused for image extraction)
  * @param {string} onDiscoveryFailure - Strategy for clone failures: 'fail' or 'skip'
+ * @param {boolean} forceDeploy - When true, override auto_deploy to 'true' on every surviving entry
  */
-async function processSkyhookConfig(skyhookPath, tag, overlay, repoPath, serviceCounters, branch, githubTokens, cloneCache, onDiscoveryFailure) {
+async function processSkyhookConfig(skyhookPath, tag, envFilterSet, repoPath, serviceCounters, branch, githubTokens, cloneCache, onDiscoveryFailure, forceDeploy) {
   const config = parseSkyhookConfig(skyhookPath);
 
   core.info(`Found ${config.services.length} services and ${config.environments.length} environments in Skyhook config`);
@@ -32891,9 +32963,10 @@ async function processSkyhookConfig(skyhookPath, tag, overlay, repoPath, service
   const matrix = buildMatrixFromSkyhook(eligibleServices, config.environments, {
     tag,
     serviceRepo,
-    envFilter: overlay,
+    envFilterSet,
     serviceCounters: mergedCounters,
-    perServiceEnvs
+    perServiceEnvs,
+    forceDeploy
   });
 
   return matrix;
