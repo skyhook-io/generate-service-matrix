@@ -44,6 +44,15 @@ inputs:
       Files with multiple images are never used as fallback to avoid ambiguity.
     required: false
     default: 'true'
+  max-length:
+    description: >
+      Maximum length for the generated service_tag (default 63 to match the
+      Kubernetes label limit). When service_name + tag + counter would exceed
+      this, the middle (tag) portion is truncated and any trailing '-'/'_' is
+      stripped so the service prefix and counter suffix are preserved.
+      Raise to 128 if the tag is only used in image / GitHub release names.
+    required: false
+    default: '63'
 
 outputs:
   matrix:

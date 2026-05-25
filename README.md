@@ -138,6 +138,7 @@ The Koala format uses `.koala-monorepo.json` at the repository root to list serv
 | `overlay` | Environment filter (e.g., `dev`, `staging`, `prod`). If omitted, all environments are included. | No | (all) |
 | `branch` | Branch for deployment context and deployment repo cloning. If omitted, uses the remote's default branch (HEAD). | No | (HEAD) |
 | `repo-path` | Path to the repository root | No | `.` |
+| `max-length` | Maximum length for the generated `service_tag`. When `{service_name}_{tag}_{counter}` would exceed this, the `tag` middle is truncated and any trailing `-`/`_` is stripped so the service prefix and counter suffix are preserved. Default matches the Kubernetes label limit; raise to 128 if `service_tag` is only used as an image tag or GitHub release name. | No | `63` |
 
 ## Outputs
 
@@ -191,6 +192,10 @@ Each matrix entry gets a unique `service_tag` in the format `{service_name}_{tag
 
 1. **Existing git tags** — the action queries `git ls-remote --tags origin` for tags matching `{service_name}_{tag}_NN` and starts after the highest existing counter.
 2. **Koala matrix output** — if both Koala and Skyhook configs are present, counters from the Koala matrix carry forward into the Skyhook matrix.
+
+### Length-aware truncation
+
+When `{service_name}_{tag}_{counter}` would exceed `max-length` (default 63, matching the Kubernetes label limit), the middle `{tag}` portion is truncated from the right and any resulting trailing `-`/`_` is stripped. The service prefix and counter suffix are preserved so each matrix entry stays unique and the tag never ends in a separator. Raise `max-length` to 128 if you only use `service_tag` as an image tag or GitHub release name.
 
 ## Permissions
 
