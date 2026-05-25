@@ -5,6 +5,7 @@ const { DeploymentMatrix } = require('./DeploymentMatrix');
 const { detectConfigFormats } = require('./config/config-detector');
 const { parseSkyhookConfig } = require('./config/skyhook-parser');
 const { buildMatrixFromSkyhook, mergeMatrices } = require('./matrix/matrix-builder');
+const { buildServiceTagPrefix } = require('./matrix/build-service-tag');
 const { buildBuildMatrix } = require('./matrix/build-matrix-builder');
 const { resolveServiceEnvironments } = require('./deployment/repo-fetcher');
 
@@ -20,6 +21,14 @@ async function run() {
     const repoPath = core.getInput('repo-path') || '.';
     const onDiscoveryFailure = core.getInput('on-discovery-failure') || 'skip';
     const kustomizeImageFallback = core.getInput('kustomize-image-fallback') === 'true';
+    const maxLengthRaw = core.getInput('max-length') || '63';
+    if (!/^[0-9]+$/.test(maxLengthRaw)) {
+      throw new Error(`max-length must be a positive integer, got "${maxLengthRaw}"`);
+    }
+    const maxLength = parseInt(maxLengthRaw, 10);
+    if (!Number.isFinite(maxLength) || maxLength <= 0) {
+      throw new Error(`max-length must be a positive integer, got "${maxLengthRaw}"`);
+    }
 
     // Build effective env filter: "environments" wins if non-empty, else fall back to legacy "overlay".
     // null means no filter (include all environments).
@@ -108,7 +117,7 @@ async function run() {
     const serviceCounters = koalaMatrix ? getServiceCounters(koalaMatrix) : new Map();
     if (configFormats.hasSkyhook) {
       core.info('📋 Processing Skyhook configuration (.skyhook/skyhook.yaml)');
-      skyhookMatrix = await processSkyhookConfig(configFormats.skyhookPath, tag, envFilterSet, repoPath, serviceCounters, branch, githubTokens, skyhookCloneCache, onDiscoveryFailure, forceDeploy);
+      skyhookMatrix = await processSkyhookConfig(configFormats.skyhookPath, tag, envFilterSet, repoPath, serviceCounters, branch, githubTokens, skyhookCloneCache, onDiscoveryFailure, forceDeploy, maxLength);
     }
 
     // Determine final matrix
@@ -297,7 +306,7 @@ async function processKoalaConfig(repoPath, branch, tag, githubToken, envFilterS
  * @param {string} onDiscoveryFailure - Strategy for clone failures: 'fail' or 'skip'
  * @param {boolean} forceDeploy - When true, override auto_deploy to 'true' on every surviving entry
  */
-async function processSkyhookConfig(skyhookPath, tag, envFilterSet, repoPath, serviceCounters, branch, githubTokens, cloneCache, onDiscoveryFailure, forceDeploy) {
+async function processSkyhookConfig(skyhookPath, tag, envFilterSet, repoPath, serviceCounters, branch, githubTokens, cloneCache, onDiscoveryFailure, forceDeploy, maxLength = 63) {
   const config = parseSkyhookConfig(skyhookPath);
 
   core.info(`Found ${config.services.length} services and ${config.environments.length} environments in Skyhook config`);
@@ -307,7 +316,7 @@ async function processSkyhookConfig(skyhookPath, tag, envFilterSet, repoPath, se
 
   // Query existing git tags to find highest counters per service,
   // so we don't generate duplicate tags across runs on the same day.
-  const existingCounters = await getExistingTagCounters(config.services, tag, repoPath);
+  const existingCounters = await getExistingTagCounters(config.services, tag, repoPath, maxLength);
 
   // Merge: take the highest counter from either source
   const mergedCounters = new Map(serviceCounters);
@@ -354,7 +363,8 @@ async function processSkyhookConfig(skyhookPath, tag, envFilterSet, repoPath, se
     envFilterSet,
     serviceCounters: mergedCounters,
     perServiceEnvs,
-    forceDeploy
+    forceDeploy,
+    maxLength,
   });
 
   return matrix;
@@ -363,12 +373,20 @@ async function processSkyhookConfig(skyhookPath, tag, envFilterSet, repoPath, se
 /**
  * Query existing git tags to find the highest counter per service for the given tag base.
  * Looks for tags matching {service_name}_{tag}_NN and returns the highest NN per service.
+ *
+ * The lookup MUST use the same truncation rules buildServiceTag applies when
+ * minting new tags. Otherwise truncated tags from prior runs will not match
+ * the regex, the counter will reset to 0, and the next run will collide with
+ * an existing release. The counter capture is also widened from \d{2} to \d+
+ * so 3+ digit counters round-trip correctly.
+ *
  * @param {Array} services - Array of service configurations
  * @param {string} tag - Base image tag (e.g., "main_2026-03-12")
  * @param {string} repoPath - Path to the git repository
+ * @param {number} [maxLength=63] - Same max-length used by buildServiceTag.
  * @returns {Promise<Map<string, number>>} - Map of service_name -> highest counter
  */
-async function getExistingTagCounters(services, tag, repoPath) {
+async function getExistingTagCounters(services, tag, repoPath, maxLength = 63) {
   const counters = new Map();
 
   let stdout = '';
@@ -388,8 +406,11 @@ async function getExistingTagCounters(services, tag, repoPath) {
   }
 
   for (const service of services) {
-    // Match tags like: refs/tags/{service_name}_{tag}_NN
-    const pattern = new RegExp(`refs/tags/${escapeRegExp(service.name)}_${escapeRegExp(tag)}_(\\d{2})$`, 'm');
+    // Compute the same prefix buildServiceTag would emit for this service+tag
+    // so we find prior tags whether they were truncated or not. Counter capture
+    // is \d+ to handle 2-digit and overflow (3+ digit) counters.
+    const prefix = buildServiceTagPrefix(service.name, tag, maxLength);
+    const pattern = new RegExp(`refs/tags/${escapeRegExp(prefix)}_(\\d+)$`, 'm');
     let highest = -1;
 
     for (const line of stdout.split('\n')) {

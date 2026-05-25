@@ -30547,11 +30547,123 @@ module.exports = { buildBuildMatrix };
 
 /***/ }),
 
+/***/ 5280:
+/***/ ((module) => {
+
+/**
+ * Build a service-scoped image tag that fits within max_length, with the
+ * service prefix and per-service counter suffix protected (never truncated).
+ *
+ * The opaque `tag` middle (which typically encodes branch + date + outer counter
+ * from an upstream determine-image-tag run) is the elastic component. If the
+ * concatenation overflows, we slice `tag` from the right and strip any trailing
+ * '-' / '_' so the result never ends in a separator.
+ *
+ * Invariants mirror those of skyhook-io/determine-image-tag's auto-generation
+ * path (see PR https://github.com/skyhook-io/determine-image-tag/pull/2):
+ *   1. Service prefix and counter suffix are protected.
+ *   2. The middle part is elastic.
+ *   3. Trim trailing '-' / '_' after every truncation.
+ *   4. Drop empty parts so the join never emits adjacent separators.
+ *   5. Final length <= maxLength.
+ *
+ * @param {string} serviceName - Service name prefix.
+ * @param {string} tag - Opaque tag middle (e.g. "<branch>_<date>_<NN>").
+ * @param {string} counterStr - Two-digit (or wider) per-service counter, no leading '_'.
+ * @param {number} [maxLength=63] - Maximum total length. Default matches the K8s
+ *   label limit. Raise to 128 if only used in image tag / GitHub release names.
+ * @returns {string}
+ */
+function buildServiceTag(serviceName, tag, counterStr, maxLength = 63) {
+  if (typeof maxLength !== 'number' || !Number.isFinite(maxLength) || maxLength <= 0) {
+    throw new Error(`buildServiceTag: maxLength must be a positive integer, got ${maxLength}`);
+  }
+
+  const svc = String(serviceName || '');
+  const cnt = String(counterStr || '');
+  const mid = String(tag || '');
+
+  // Fixed parts: <svc><_><mid><_><cnt>. Separators count only when the parts they
+  // join are non-empty -- we compute the budget conservatively, then build by
+  // joining only non-empty parts so unused separators evaporate.
+  const fixedSepCount = (svc ? 1 : 0) + (cnt ? 1 : 0);
+  const fixedLen = svc.length + cnt.length + fixedSepCount;
+
+  if (fixedLen > maxLength) {
+    // Service + counter alone overflow. Best-effort: truncate service so cnt fits.
+    const availSvc = Math.max(0, maxLength - cnt.length - (cnt ? 1 : 0));
+    const truncatedSvc = trimTrailingSep(svc.slice(0, availSvc));
+    return joinNonEmpty('_', [truncatedSvc, cnt]);
+  }
+
+  const availForTag = maxLength - fixedLen;
+  let truncatedTag = mid;
+  if (availForTag <= 0) {
+    truncatedTag = '';
+  } else if (mid.length > availForTag) {
+    truncatedTag = trimTrailingSep(mid.slice(0, availForTag));
+  }
+
+  return joinNonEmpty('_', [svc, truncatedTag, cnt]);
+}
+
+/**
+ * Strip trailing '-' and '_' characters.
+ * @param {string} s
+ * @returns {string}
+ */
+function trimTrailingSep(s) {
+  return String(s || '').replace(/[-_]+$/, '');
+}
+
+/**
+ * Join non-empty string parts with a separator. Skips empty/falsy entries so
+ * the result never has adjacent separators or leading/trailing separators
+ * caused by empty middle parts.
+ * @param {string} sep
+ * @param {Array<string>} parts
+ * @returns {string}
+ */
+function joinNonEmpty(sep, parts) {
+  return (parts || []).filter(p => p !== undefined && p !== null && p !== '').join(sep);
+}
+
+/**
+ * Build the prefix of a service_tag — the portion before the final "_<counter>".
+ * Used when scanning existing git tags to find prior counters: callers must
+ * search using the SAME truncation rules that buildServiceTag applies when
+ * minting new tags, otherwise truncated tags from prior runs are missed and
+ * the counter resets, causing collisions.
+ *
+ * @param {string} serviceName
+ * @param {string} tag
+ * @param {number} [maxLength=63]
+ * @param {number} [counterDigits=2] - Counter width to reserve in the budget.
+ * @returns {string}
+ */
+function buildServiceTagPrefix(serviceName, tag, maxLength = 63, counterDigits = 2) {
+  const placeholder = '0'.repeat(Math.max(1, counterDigits));
+  const sample = buildServiceTag(serviceName, tag, placeholder, maxLength);
+  // Strip the trailing "_<digits>" we just appended.
+  return sample.replace(/_\d+$/, '');
+}
+
+module.exports = {
+  buildServiceTag,
+  buildServiceTagPrefix,
+  trimTrailingSep,
+  joinNonEmpty,
+};
+
+
+/***/ }),
+
 /***/ 6104:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 const core = __nccwpck_require__(7484);
 const { DeploymentMatrix, DeploymentEntry } = __nccwpck_require__(9439);
+const { buildServiceTag } = __nccwpck_require__(5280);
 
 /**
  * Build a DeploymentMatrix from Skyhook services and environments
@@ -30567,7 +30679,7 @@ const { DeploymentMatrix, DeploymentEntry } = __nccwpck_require__(9439);
  * @returns {DeploymentMatrix}
  */
 function buildMatrixFromSkyhook(services, environments, options = {}) {
-  const { tag, serviceRepo, envFilterSet, serviceCounters = new Map(), perServiceEnvs = new Map(), forceDeploy = false } = options;
+  const { tag, serviceRepo, envFilterSet, serviceCounters = new Map(), perServiceEnvs = new Map(), forceDeploy = false, maxLength = 63 } = options;
   const matrix = new DeploymentMatrix();
 
   // null/empty set means no filter (include all envs).
@@ -30605,7 +30717,14 @@ function buildMatrixFromSkyhook(services, environments, options = {}) {
     const nextCounter = currentCounter + 1;
     counters.set(service.name, nextCounter);
     const counterStr = String(nextCounter).padStart(2, '0');
-    const serviceTag = `${service.name}_${tag}_${counterStr}`;
+    // Length-aware composition: protects service prefix and counter suffix,
+    // trims the elastic tag middle so the final tag fits within maxLength
+    // (default 63 = K8s label limit) without trailing or double separators.
+    // See src/matrix/build-service-tag.js for the invariants.
+    const serviceTag = buildServiceTag(service.name, tag, counterStr, maxLength);
+    if (serviceTag.length === maxLength && `${service.name}_${tag}_${counterStr}`.length > maxLength) {
+      core.info(`   ✂️  service_tag truncated to fit max_length=${maxLength}`);
+    }
     serviceTags.set(service.name, serviceTag);
 
     for (const env of serviceEnvs) {
@@ -30651,7 +30770,7 @@ function createDeploymentEntry(service, env, tag, serviceRepo, serviceTag, force
   } else {
     core.info(`   auto_deploy: "${autoDeploy}" (from skyhook.yaml environments[].autoDeploy, defaults to false if not set)`);
   }
-  core.info(`   service_tag: "${serviceTag}" (computed: {service_name}_{tag}_{counter})`);
+  core.info(`   service_tag: "${serviceTag}" (computed: {service_name}_{tag}_{counter}, length-aware to fit max-length)`);
 
   return new DeploymentEntry({
     service_name: service.name,
@@ -32617,6 +32736,7 @@ const { DeploymentMatrix } = __nccwpck_require__(9439);
 const { detectConfigFormats } = __nccwpck_require__(7771);
 const { parseSkyhookConfig } = __nccwpck_require__(7396);
 const { buildMatrixFromSkyhook, mergeMatrices } = __nccwpck_require__(6104);
+const { buildServiceTagPrefix } = __nccwpck_require__(5280);
 const { buildBuildMatrix } = __nccwpck_require__(3959);
 const { resolveServiceEnvironments } = __nccwpck_require__(9315);
 
@@ -32632,6 +32752,14 @@ async function run() {
     const repoPath = core.getInput('repo-path') || '.';
     const onDiscoveryFailure = core.getInput('on-discovery-failure') || 'skip';
     const kustomizeImageFallback = core.getInput('kustomize-image-fallback') === 'true';
+    const maxLengthRaw = core.getInput('max-length') || '63';
+    if (!/^[0-9]+$/.test(maxLengthRaw)) {
+      throw new Error(`max-length must be a positive integer, got "${maxLengthRaw}"`);
+    }
+    const maxLength = parseInt(maxLengthRaw, 10);
+    if (!Number.isFinite(maxLength) || maxLength <= 0) {
+      throw new Error(`max-length must be a positive integer, got "${maxLengthRaw}"`);
+    }
 
     // Build effective env filter: "environments" wins if non-empty, else fall back to legacy "overlay".
     // null means no filter (include all environments).
@@ -32720,7 +32848,7 @@ async function run() {
     const serviceCounters = koalaMatrix ? getServiceCounters(koalaMatrix) : new Map();
     if (configFormats.hasSkyhook) {
       core.info('📋 Processing Skyhook configuration (.skyhook/skyhook.yaml)');
-      skyhookMatrix = await processSkyhookConfig(configFormats.skyhookPath, tag, envFilterSet, repoPath, serviceCounters, branch, githubTokens, skyhookCloneCache, onDiscoveryFailure, forceDeploy);
+      skyhookMatrix = await processSkyhookConfig(configFormats.skyhookPath, tag, envFilterSet, repoPath, serviceCounters, branch, githubTokens, skyhookCloneCache, onDiscoveryFailure, forceDeploy, maxLength);
     }
 
     // Determine final matrix
@@ -32909,7 +33037,7 @@ async function processKoalaConfig(repoPath, branch, tag, githubToken, envFilterS
  * @param {string} onDiscoveryFailure - Strategy for clone failures: 'fail' or 'skip'
  * @param {boolean} forceDeploy - When true, override auto_deploy to 'true' on every surviving entry
  */
-async function processSkyhookConfig(skyhookPath, tag, envFilterSet, repoPath, serviceCounters, branch, githubTokens, cloneCache, onDiscoveryFailure, forceDeploy) {
+async function processSkyhookConfig(skyhookPath, tag, envFilterSet, repoPath, serviceCounters, branch, githubTokens, cloneCache, onDiscoveryFailure, forceDeploy, maxLength = 63) {
   const config = parseSkyhookConfig(skyhookPath);
 
   core.info(`Found ${config.services.length} services and ${config.environments.length} environments in Skyhook config`);
@@ -32919,7 +33047,7 @@ async function processSkyhookConfig(skyhookPath, tag, envFilterSet, repoPath, se
 
   // Query existing git tags to find highest counters per service,
   // so we don't generate duplicate tags across runs on the same day.
-  const existingCounters = await getExistingTagCounters(config.services, tag, repoPath);
+  const existingCounters = await getExistingTagCounters(config.services, tag, repoPath, maxLength);
 
   // Merge: take the highest counter from either source
   const mergedCounters = new Map(serviceCounters);
@@ -32966,7 +33094,8 @@ async function processSkyhookConfig(skyhookPath, tag, envFilterSet, repoPath, se
     envFilterSet,
     serviceCounters: mergedCounters,
     perServiceEnvs,
-    forceDeploy
+    forceDeploy,
+    maxLength,
   });
 
   return matrix;
@@ -32975,12 +33104,20 @@ async function processSkyhookConfig(skyhookPath, tag, envFilterSet, repoPath, se
 /**
  * Query existing git tags to find the highest counter per service for the given tag base.
  * Looks for tags matching {service_name}_{tag}_NN and returns the highest NN per service.
+ *
+ * The lookup MUST use the same truncation rules buildServiceTag applies when
+ * minting new tags. Otherwise truncated tags from prior runs will not match
+ * the regex, the counter will reset to 0, and the next run will collide with
+ * an existing release. The counter capture is also widened from \d{2} to \d+
+ * so 3+ digit counters round-trip correctly.
+ *
  * @param {Array} services - Array of service configurations
  * @param {string} tag - Base image tag (e.g., "main_2026-03-12")
  * @param {string} repoPath - Path to the git repository
+ * @param {number} [maxLength=63] - Same max-length used by buildServiceTag.
  * @returns {Promise<Map<string, number>>} - Map of service_name -> highest counter
  */
-async function getExistingTagCounters(services, tag, repoPath) {
+async function getExistingTagCounters(services, tag, repoPath, maxLength = 63) {
   const counters = new Map();
 
   let stdout = '';
@@ -33000,8 +33137,11 @@ async function getExistingTagCounters(services, tag, repoPath) {
   }
 
   for (const service of services) {
-    // Match tags like: refs/tags/{service_name}_{tag}_NN
-    const pattern = new RegExp(`refs/tags/${escapeRegExp(service.name)}_${escapeRegExp(tag)}_(\\d{2})$`, 'm');
+    // Compute the same prefix buildServiceTag would emit for this service+tag
+    // so we find prior tags whether they were truncated or not. Counter capture
+    // is \d+ to handle 2-digit and overflow (3+ digit) counters.
+    const prefix = buildServiceTagPrefix(service.name, tag, maxLength);
+    const pattern = new RegExp(`refs/tags/${escapeRegExp(prefix)}_(\\d+)$`, 'm');
     let highest = -1;
 
     for (const line of stdout.split('\n')) {

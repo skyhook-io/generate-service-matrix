@@ -1,5 +1,6 @@
 const core = require('@actions/core');
 const { DeploymentMatrix, DeploymentEntry } = require('../DeploymentMatrix');
+const { buildServiceTag } = require('./build-service-tag');
 
 /**
  * Build a DeploymentMatrix from Skyhook services and environments
@@ -15,7 +16,7 @@ const { DeploymentMatrix, DeploymentEntry } = require('../DeploymentMatrix');
  * @returns {DeploymentMatrix}
  */
 function buildMatrixFromSkyhook(services, environments, options = {}) {
-  const { tag, serviceRepo, envFilterSet, serviceCounters = new Map(), perServiceEnvs = new Map(), forceDeploy = false } = options;
+  const { tag, serviceRepo, envFilterSet, serviceCounters = new Map(), perServiceEnvs = new Map(), forceDeploy = false, maxLength = 63 } = options;
   const matrix = new DeploymentMatrix();
 
   // null/empty set means no filter (include all envs).
@@ -53,7 +54,14 @@ function buildMatrixFromSkyhook(services, environments, options = {}) {
     const nextCounter = currentCounter + 1;
     counters.set(service.name, nextCounter);
     const counterStr = String(nextCounter).padStart(2, '0');
-    const serviceTag = `${service.name}_${tag}_${counterStr}`;
+    // Length-aware composition: protects service prefix and counter suffix,
+    // trims the elastic tag middle so the final tag fits within maxLength
+    // (default 63 = K8s label limit) without trailing or double separators.
+    // See src/matrix/build-service-tag.js for the invariants.
+    const serviceTag = buildServiceTag(service.name, tag, counterStr, maxLength);
+    if (serviceTag.length === maxLength && `${service.name}_${tag}_${counterStr}`.length > maxLength) {
+      core.info(`   ✂️  service_tag truncated to fit max_length=${maxLength}`);
+    }
     serviceTags.set(service.name, serviceTag);
 
     for (const env of serviceEnvs) {
@@ -99,7 +107,7 @@ function createDeploymentEntry(service, env, tag, serviceRepo, serviceTag, force
   } else {
     core.info(`   auto_deploy: "${autoDeploy}" (from skyhook.yaml environments[].autoDeploy, defaults to false if not set)`);
   }
-  core.info(`   service_tag: "${serviceTag}" (computed: {service_name}_{tag}_{counter})`);
+  core.info(`   service_tag: "${serviceTag}" (computed: {service_name}_{tag}_{counter}, length-aware to fit max-length)`);
 
   return new DeploymentEntry({
     service_name: service.name,
