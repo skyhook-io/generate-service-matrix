@@ -59,7 +59,6 @@ async function run() {
     const envToken = process.env.GITHUB_TOKEN;
     const githubTokens = resolveTokens(inputToken, envToken);
 
-    core.info(`Token sources: github-token input=${inputToken ? `yes (prefix: ${inputToken.substring(0, 8)}..., length: ${inputToken.length})` : 'no'}, GITHUB_TOKEN env=${envToken ? `yes (prefix: ${envToken.substring(0, 8)}..., length: ${envToken.length})` : 'no'}`);
     core.info(`Resolved ${githubTokens.length} unique token(s)`);
 
     // Validate inputs
@@ -94,22 +93,6 @@ async function run() {
     if (configFormats.hasKoala) {
       core.info('📋 Processing Koala configuration (.koala-monorepo.json)');
       koalaMatrix = await processKoalaConfig(repoPath, branch, tag, githubToken, envFilterSet, forceDeploy);
-    }
-
-    // Log git credential config for debugging — actions/checkout may set a credential helper
-    // that could intercept embedded-token URLs used for deployment repo cloning
-    try {
-      let credentialConfig = '';
-      await exec.exec('git', ['config', '--global', '--list'], {
-        silent: true,
-        listeners: { stdout: (data) => { credentialConfig += data.toString(); } }
-      });
-      const credentialLines = credentialConfig.split('\n').filter(l => l.includes('credential') || l.includes('http.'));
-      if (credentialLines.length > 0) {
-        core.info(`Git credential/http config:\n${credentialLines.join('\n')}`);
-      }
-    } catch (_) {
-      // ignore — just debug info
     }
 
     // Process Skyhook config if present
@@ -210,31 +193,8 @@ async function processKoalaConfig(repoPath, branch, tag, githubToken, envFilterS
   core.info('🔍 Reading .koala-monorepo.json from repo root to identify services');
   core.info('📋 Extracting deployment configuration from .koala.toml files for different environments');
 
-  // Build the command
-  let cmd = `npx --yes workflow-utils get-services-env-config -dir . -outputFormat github-matrix -actionTag ${tag} -token ${githubToken}`;
-  if (branch) {
-    cmd += ` -branch ${branch}`;
-  }
-
-  // workflow-utils -envFilter takes a single value. If we have exactly one env in the filter,
-  // use the native flag (also faster - drops other envs server-side). Otherwise, fetch all
-  // envs and post-filter the parsed matrix below.
-  let postFilterNeeded = false;
-  if (envFilterSet instanceof Set && envFilterSet.size > 0) {
-    if (envFilterSet.size === 1) {
-      const single = [...envFilterSet][0];
-      core.info(`🎯 Filtering for environment: ${single}`);
-      cmd += ` -envFilter ${single}`;
-    } else {
-      core.info(`🎯 Filtering for environments (post-filter): [${[...envFilterSet].join(', ')}]`);
-      postFilterNeeded = true;
-    }
-  } else {
-    core.info('🌍 Including all environments');
-  }
-
-  core.info(`📦 Executing: ${cmd}`);
-
+  let postFilterNeeded = envFilterSet instanceof Set && envFilterSet.size > 1;
+  const helperOptions = {branch, actionTag: tag, envFilter: envFilterSet instanceof Set && envFilterSet.size === 1 ? [...envFilterSet][0] : undefined};
   // Execute the command
   let stdout = '';
   let stderr = '';
@@ -242,8 +202,9 @@ async function processKoalaConfig(repoPath, branch, tag, githubToken, envFilterS
   const options = {
     cwd: repoPath,
     env: {
-      ...process.env,
-      GITHUB_TOKEN: githubToken
+      LOCKED_WORKFLOW_TOKEN: githubToken,
+      GITHUB_TOKEN: githubToken,
+      ...(process.env.GITHUB_ACTION_TOKEN ? {GITHUB_ACTION_TOKEN: process.env.GITHUB_ACTION_TOKEN} : {})
     },
     listeners: {
       stdout: (data) => {
@@ -255,7 +216,8 @@ async function processKoalaConfig(repoPath, branch, tag, githubToken, envFilterS
     }
   };
 
-  await exec.exec('bash', ['-c', cmd], options);
+  options.silent = true;
+  await exec.exec(process.execPath, [require('path').join(__dirname, 'workflow-utils', 'index.js'), JSON.stringify(helperOptions)], options);
 
   if (!stdout.trim()) {
     throw new Error('Failed to generate matrix from Koala config - empty result');

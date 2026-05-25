@@ -1,0 +1,16 @@
+{
+  "dependencies": {},
+  "npm": {
+    "bundle_sha256": "ab6cd7c610001542ef610c68a528e1b69459662121eab7d68eeeef542d5cdb90",
+    "helper_sha256": "d7ebc1a01bc727d1e9610f21b7f56357e80e7258dbf83275cfafdd8d4aaa56f9",
+    "lock_sha256": "f1950ec640ccc721c67dae36a11b3114a70fc9440270021272937c4647248ec6"
+  },
+  "runner_tools": "Existing runner binaries and consumer build inputs are not snapshotted.",
+  "snapshot": "36e46fb11ba4020da336",
+  "source": {
+    "ref": "v1",
+    "repository": "skyhook-io/generate-service-matrix",
+    "sha": "bf51052499ec6bb80adf386b5265e6cbe0d44b51"
+  },
+  "tools": {}
+}

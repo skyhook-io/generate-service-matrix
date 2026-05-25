@@ -42,13 +42,12 @@ async function cloneDeploymentRepo(repoFullName, branch, githubTokens, cloneCach
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `skyhook-${sanitized}-`));
     const repoUrl = `https://x-access-token:${token}@github.com/${repoFullName}.git`;
 
-    const tokenPrefix = token.substring(0, 8);
-    core.info(`Cloning ${repoFullName}@${branchLabel} (token ${i + 1}/${githubTokens.length}, prefix: ${tokenPrefix}..., length: ${token.length})`);
     core.info(`Clone args: git ${baseArgs.join(' ')} https://x-access-token:***@github.com/${repoFullName}.git ${tmpDir}`);
 
     let stderr = '';
     try {
       await exec.exec('git', [...baseArgs, repoUrl, tmpDir], {
+        silent: true,
         silent: true,
         listeners: {
           stderr: (data) => { stderr += data.toString(); }
@@ -60,7 +59,7 @@ async function cloneDeploymentRepo(repoFullName, branch, githubTokens, cloneCach
       return tmpDir;
     } catch (err) {
       // Log the actual git error for debugging
-      core.warning(`Clone failed for ${repoFullName} with token ${i + 1}: ${err.message}`);
+      core.warning(`Deployment repository access failed for ${repoFullName} with credential ${i + 1}`);
       if (stderr.trim()) {
         core.warning(`git stderr: ${stderr.trim()}`);
       }
